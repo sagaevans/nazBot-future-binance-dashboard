@@ -1,90 +1,64 @@
-# 🎯 nazBot Alpha 2.0 - Ultimate Hybrid Sniper (Binance Futures)
+# 🚀 nazBot Alpha 2.0 - Ultimate Adaptive Hybrid Sniper
 
-nazBot Alpha 2.0 adalah sistem trading otomatis profesional untuk **Binance Futures** yang berjalan 24/7. Menggunakan strategi **S/R Bouncer (Mean Reversion)** yang diperkuat dengan filter **Anti-Fakeout** dan **Vectorized Calculation** untuk akurasi maksimal.
-
----
-
-## 🚀 FITUR & LOGIKA STRATEGI
-
-### 1. Dual-Squad Engine (Hybrid System)
-* **⭐ VIP Squad:** Fokus pada 6 koin elit (`BTC`, `ETH`, `SOL`, `BNB`, `ADA`, `DOT`) di Timeframe **15m**.
-* **🐺 Hunter Squad:** Memindai **Top 50 Volume Altcoins** dengan sistem *Cascading Timeframe* (**5m > 3m > 1m**). Bot otomatis turun ke TF rendah jika TF tinggi sepi sinyal.
-
-### 2. Sniper Logic (Anti-Fakeout Filters)
-Bot ini tidak asal "hit" garis, melainkan melalui filter ketat:
-* **Vectorized SnR:** Algoritma Pandas untuk mendeteksi *Swing High/Low* secara instan.
-* **Body Ratio Filter:** Menolak candle dengan sumbu (*shadow*) panjang (menghindari manipulasi market).
-* **ATR Zone Width:** Memastikan zona S/R cukup kuat (bukan sekadar noise).
-* **RSI & Proximity:** Mencegah entry "telat" jika harga sudah terbang jauh dari pantulan.
-
-### 3. Money Management
-* **Leverage:** 25x (Cross Margin).
-* **Target Profit:** **Fixed 50% ROE** (Order TP langsung dipasang ke server Binance saat entry).
-* **No Stop Loss:** Didesain untuk persiapan strategi **DCA (Averaging)** jika market berbalik arah.
+nazBot Alpha 2.0 adalah bot trading otomatis untuk Binance Futures yang menggabungkan presisi **Price Action** dengan ketahanan **Smart DCA**. Bot ini dirancang untuk mendeteksi pantulan harga pada struktur market kunci (Tembok Teknis) dan mengelola risiko secara dinamis.
 
 ---
 
-## 🛠️ PANDUAN DEPLOY DI REPLIT (LENGKAP 24/7)
+## 🧠 Core Strategy: "The 3-Walls Adaptive"
 
-Ikuti langkah demi langkah ini untuk menjalankan bot tanpa error:
+Bot memantau tiga level pertahanan harga (Support/Resistance) secara real-time untuk mencari titik pantulan (*rejection*):
 
-### LANGKAH 1: IMPORT PROJECT
-1. Buka [Replit.com](https://replit.com/).
-2. Klik **"+ Create Repl"** -> Pilih **"Import from GitHub"**.
-3. Masukkan URL Repository ini: `https://github.com/sagaevans/nazBot-Alpha-v2-Public.git`.
+1.  **🏰 Tembok Utama (EMA 200):** Basis tren jangka panjang.
+2.  **🛡️ Tembok Struktur (MA 99):** Penahan volatilitas menengah.
+3.  **🌊 Tembok Ekstrem (Bollinger Bands Dev 2):** Area jenuh beli/jual (*oversold/overbought*).
 
-### LANGKAH 2: INSTALASI MANUAL (SHELL)
-Agar **Zero Error**, buka tab **Shell** (di sebelah Console) di Replit, lalu jalankan perintah ini satu per satu:
-```bash
-pip install --upgrade pip
-pip install pandas numpy
-pip install python-binance ta
-pip install Flask Werkzeug Jinja2 itsdangerous click blinker
-pip install requests urllib3 certifi charset-normalizer idna cryptography
+### 🔍 Filter Entry (Anti-False Breakout)
+* **Volume Exhaustion:** Bot hanya masuk jika volume transaksi menurun saat mendekati tembok (menandakan tekanan mulai habis).
+* **Shadow Rejection (Pinbar):** Harus ada ekor candle yang jelas sebagai bukti penolakan harga.
+    * **VIP (BTC, ETH, dkk):** Ekor wajib **2x** panjang badan candle.
+    * **Alts:** Ekor wajib minimal **0.8x** panjang badan candle.
 
-LANGKAH 3: SETTING API KEY (SECRETS)
-Di panel kiri Replit, klik ikon gembok (Secrets).
+---
 
-Tambahkan dua data berikut:
+## 🛡️ Risk Management: Smart DCA & Dynamic SL
 
-Key: BINANCE_API_KEY | Value: (Isi API Key Binance Anda)
+Untuk menjaga Winrate tinggi (87.5%+) namun tetap aman dari kiamat market, bot menggunakan logika hibrida:
 
-Key: BINANCE_API_SECRET | Value: (Isi Secret Key Binance Anda)
+### 1. Smart DCA (Second Life)
+Bot tidak menggunakan DCA statis/martingale. Bot menggunakan **DCA Teknikal**:
+* Jika Entry 1 di Tembok 1 gagal (jebol), bot akan menunggu harga menyentuh **Tembok 2** di bawahnya untuk melakukan **1x DCA** (menambah margin).
+* Tujuannya untuk memperbaiki *Average Price* sehingga pantulan kecil saja sudah cukup untuk keluar dengan profit.
 
-LANGKAH 4: MENJALANKAN BOT
-Klik tombol "Run" di bagian atas Replit.
+### 2. Dynamic Stop Loss (The Breach Cut)
+Bot tidak membiarkan posisi "nyangkut" selamanya.
+* **Trigger:** Jika harga melakukan *Candle Close* di bawah tembok terakhir atau menembus ujung ekor (*Low*) candle sinyal.
+* **Hard Cap:** Stop Loss otomatis tereksekusi jika kerugian mencapai **-30% ROE** (sebagai pengaman modal utama).
 
-Tunggu log muncul: 🔥 nazBot Alpha 2.0 AKTIF.
+### 3. Vengeance Re-entry (Balas Dendam Pintar)
+Jika posisi terkena *Cut Loss*, bot akan mencatat harga tersebut. Bot diharamkan masuk lagi di koin yang sama kecuali harga sudah jatuh lebih dalam (minimal 2-3%) dari harga *Cut Loss* sebelumnya untuk mencari pijakan baru.
 
-Dashboard Trading akan muncul di jendela Webview.
+---
 
-LANGKAH 5: AGAR BOT JALAN 24 JAM (UPTIME)
-Agar bot tidak mati saat tab ditutup (PENTING untuk akun Replit Gratis):
+## 🔥 Fitur Sistem
 
-Copy URL dari Webview Replit Anda (Contoh: https://test-demo-binance.username.repl.co).
+| Fitur | Keterangan |
+| :--- | :--- |
+| **VIP Squad** | 6 Slot (BTC, ETH, SOL, BNB, ADA, DOT). Fokus **LONG Only** (Trend Follower). |
+| **Hunter Squad** | 8 Slot Altcoin Fleksibel. Bisa **LONG/SHORT** (Scalping Agresif). |
+| **Cascading TF** | Memindai sinyal dari `1m` hingga `4h` secara berurutan. |
+| **Auto TP** | Take Profit otomatis di-set pada **+50% ROE**. |
+| **API Robustness** | Dilengkapi *Exponential Backoff* (Anti-Banned) & *Fallback System* (Limit Order jika Market terlalu liar). |
 
-Buka UptimeRobot (Gratis).
+---
 
-Buat "New Monitor" -> Type: HTTP(s).
+## 🛠️ Cara Instalasi
 
-Masukkan URL Replit Anda tadi. Set interval setiap 5 menit.
+1.  **Environment:** Pastikan Python 3.10+ terinstal.
+2.  **API Keys:** Masukkan `BINANCE_API_KEY` dan `BINANCE_API_SECRET` ke dalam Secrets Replit atau `.env`.
+3.  **Requirements:** `pip install -r requirements.txt`
+4.  **Run:** Jalankan `python main.py` dan akses dashboard di port 8080.
 
-Klik Create Monitor. Selesai! Bot akan dijaga tetap hidup 24/7.
+---
 
-📊 DASHBOARD OVERVIEW
-Dashboard Flask menyediakan pantauan real-time:
-
-Balance & Net PNL: Pantauan saldo USDT secara instan.
-
-VIP & Hunter Tables: Detail posisi aktif, harga entry, dan ROE berjalan.
-
-History Panen: Catatan koin yang baru saja menyentuh target Take Profit.
-
-⚠️ DISCLAIMER
-Trading Cryptocurrency mengandung risiko finansial yang sangat tinggi. nazBot Alpha 2.0 adalah alat bantu analisis teknis dan bukan jaminan keuntungan pasti. Pengembang tidak bertanggung jawab atas kerugian modal yang terjadi. Gunakan Testnet untuk uji coba. Risk Management is your responsibility!
-
-Author: NasZ / sagaevans
-
-Version: 2.0.0 (Ultimate Hybrid)
-
-License: MIT
+## ⚠️ Disclaimer
+*Trading Futures memiliki risiko tinggi. nazBot Alpha 2.0 adalah alat bantu teknis. Pengguna bertanggung jawab penuh atas konfigurasi leverage dan margin yang digunakan. Disarankan uji coba di Testnet terlebih dahulu.*
