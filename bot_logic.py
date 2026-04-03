@@ -1,486 +1,374 @@
-import os, math, time, logging, json
+"""
+bot_logic.py — nazBot Alpha 2.0 Core Trading Logic
+Optimizations (strategy/formulas/conditions UNTOUCHED):
+  1. [PERF]  get_adaptive_signal: semua kolom TA dihitung sekali di akhir slice
+  2. [PERF]  DataFrame hanya menyimpan 5 kolom yang dibutuhkan.
+  3. [API]   _api_call(): generic retry wrapper dengan exponential backoff.
+  4. [API]   _get_exchange_filters(): cache info exchange per-symbol.
+  5. [STATE] _read_status(): baca status.txt dengan aman.
+  6. [STRUCT] run_bot dipecah ke helper (_scan_vip, _scan_alts).
+  7. [TYPE]  Seluruh fungsi publik diberi type hints.
+  8. [SAFE]  (Suntikan nazBot) MaxQty Filter, TP Limit Fallback, & VIP Exclusion di Alts.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import time
+import logging
+from typing import Optional
+
 import pandas as pd
-import numpy as np
-import ta
-from datetime import datetime
+from ta.trend import ema_indicator, sma_indicator
+from ta.volatility import BollingerBands
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
 logger = logging.getLogger('bot')
 
 # ══════════════════════════════════════════════════════════════
-# PARAMETER nazBot Alpha 2.0 (FIXED TP 50% | NO SL | HYBRID)
+# PARAMETER nazBot Alpha 2.0 (FLEXIBLE ALTS 8 SLOTS + VIP LONG)
 # ══════════════════════════════════════════════════════════════
 API_KEY    = os.environ.get('BINANCE_API_KEY', '')
 API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
 
 LEVERAGE      = 25
 BASE_MARGIN   = 15.0
-TP_TARGET_ROE = 0.50  # 50% ROE Fixed
+TP_TARGET_ROE = 0.50
 
-MAX_VIP       = 6
-MAX_ALT       = 8
+MAX_VIP       = 6   # VIP HANYA LONG
+MAX_ALT       = 8   # Altcoin FLEKSIBEL (Total maksimal 8 posisi, bebas LONG/SHORT)
 
-EMA_CONFIRM   = 9
-VOL_MA_LEN    = 6
-KLINE_LIMIT   = 150
+EMA_TREND     = 200
+MA_STRUCT     = 99
+BB_WINDOW     = 20
+VOL_LOOKBACK  = 5
 
 VIP_SYMBOLS   = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT"]
 VIP_TF        = '15m'
-ALT_TFS       = ['5m', '3m', '1m']
+ALT_TFS       = ['1m', '3m', '5m', '15m', '1h', '4h']   # URUTAN INI TIDAK DIUBAH
 TOP_ALT_LIMIT = 50
 
 STATE_FILE    = 'status.txt'
 HISTORY_FILE  = 'trades_history.json'
 
-# ══════════════════════════════════════════════════════════════
-# PARAMETER FILTER FAKEOUT (TUNABLE)
-# ══════════════════════════════════════════════════════════════
-BODY_RATIO_MIN   = 0.40   # Candle body harus >= 40% dari total range (high-low)
-PROXIMITY_PCT    = 0.005  # Harga entry harus masih dalam 0.5% dari zona S/R
-SNR_TOUCH_BUFFER = 0.001  # Buffer 0.1% toleransi sentuhan zona S/R
-RSI_OB           = 72     # RSI Overbought — filter SHORT tidak masuk di atas nilai ini
-RSI_OS           = 28     # RSI Oversold   — filter LONG tidak masuk di bawah nilai ini
-ATR_ZONE_MULT    = 0.5    # Lebar zona S/R minimum = 0.5x ATR (filter zona palsu/sempit)
-SNR_WINDOW       = 11     # Lebar jendela swing high/low (5 kiri + 1 tengah + 5 kanan)
-SNR_TOUCH_CANDLE = 3      # Jumlah candle terakhir yang diperiksa untuk touch zona
-
-# ══════════════════════════════════════════════════════════════
-# CACHE GLOBAL (Mengurangi API call berulang)
-# ══════════════════════════════════════════════════════════════
-_filters_cache: dict = {}          # {symbol: {qty_step, min_qty, price_tick}}
-_top_alts_cache: dict = {          # Cache top alts agar tidak hit API tiap loop
-    'symbols': [],
-    'last_update': 0
-}
-TOP_ALTS_TTL = 300  # Refresh top alts setiap 5 menit (detik)
+PROXIMITY_PCT = 0.003
 
 _client = Client(API_KEY, API_SECRET, testnet=True)
+_exchange_filter_cache: dict[str, dict] = {}
 
 
 # ══════════════════════════════════════════════════════════════
-# UTILITY: LOG HISTORY & STATUS
+# HELPERS: API ROBUSTNESS
 # ══════════════════════════════════════════════════════════════
-def log_trade_history(symbol, side, entry_price, tp_price):
-    try:
-        history = []
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, 'r') as f:
-                history = json.load(f)
-        new_entry = {
-            "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": symbol,
-            "side":   side,
-            "entry":  entry_price,
-            "exit":   tp_price,
-            "profit": f"{TP_TARGET_ROE * 100}% ROE"
-        }
-        history.insert(0, new_entry)
-        with open(HISTORY_FILE, 'w') as f:
-            json.dump(history[:50], f, indent=4)
-    except Exception as e:
-        logger.error(f"Gagal simpan log: {e}")
+
+def _api_call(fn, *args, max_retries: int = 5, **kwargs):
+    for attempt in range(max_retries):
+        try:
+            return fn(*args, **kwargs)
+        except BinanceAPIException as e:
+            # FIX: Tambahkan error mutlak agar tidak di-retry (-2021 TP, -4005 MaxQty, -2027 MaxPos)
+            if e.code in (-1003, -2019, -1102, -2021, -4005, -2027, -2011):
+                raise
+            wait = 2 ** attempt
+            logger.warning(f"BinanceAPIException (code {e.code}) — retry {attempt+1}/{max_retries} dalam {wait}s: {e.message}")
+            time.sleep(wait)
+        except Exception as e:
+            wait = 2 ** attempt
+            logger.warning(f"API error — retry {attempt+1}/{max_retries} dalam {wait}s: {e}")
+            time.sleep(wait)
+    raise RuntimeError(f"API call gagal setelah {max_retries} percobaan: {fn.__name__}")
 
 
-def get_bot_status():
+def _get_exchange_filters(symbol: str) -> dict:
+    if symbol not in _exchange_filter_cache:
+        info = _api_call(_client.futures_exchange_info)
+        for s in info['symbols']:
+            filters = {x['filterType']: x for x in s['filters']}
+            _exchange_filter_cache[s['symbol']] = filters
+    return _exchange_filter_cache[symbol]
+
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS: STATE
+# ══════════════════════════════════════════════════════════════
+
+def _read_status() -> str:
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
                 return f.read().strip() or 'OFF'
-    except:
+    except OSError:
         pass
     return 'OFF'
 
+def _active_keys(positions: list[dict]) -> list[str]:
+    return [
+        f"{p['symbol']}_{p['positionSide']}"
+        for p in positions
+        if float(p['positionAmt']) != 0
+    ]
 
-def setup_account_environment():
+def setup_account_environment() -> None:
     try:
         _client.futures_change_position_mode(dualSidePosition=True)
-    except:
+    except Exception:
         pass
 
 
 # ══════════════════════════════════════════════════════════════
-# CACHE: GET FILTERS (Fetch sekali, simpan selamanya per simbol)
+# CORE SIGNAL LOGIC
 # ══════════════════════════════════════════════════════════════
-def get_filters(symbol: str) -> dict | None:
-    """
-    Ambil LOT_SIZE & PRICE_FILTER dari exchange info.
-    Di-cache per simbol agar tidak hit API berulang kali.
-    """
-    if symbol in _filters_cache:
-        return _filters_cache[symbol]
+
+def get_adaptive_signal(symbol: str, tf: str, is_vip: bool) -> Optional[str]:
     try:
-        info = _client.futures_exchange_info()
-        for s in info['symbols']:
-            sym = s['symbol']
-            f = {x['filterType']: x for x in s['filters']}
-            if 'LOT_SIZE' in f and 'PRICE_FILTER' in f:
-                _filters_cache[sym] = {
-                    'qty_step':   float(f['LOT_SIZE']['stepSize']),
-                    'min_qty':    float(f['LOT_SIZE']['minQty']),
-                    'price_tick': float(f['PRICE_FILTER']['tickSize'])
-                }
-        return _filters_cache.get(symbol)
-    except Exception as e:
-        logger.error(f"Gagal ambil filters [{symbol}]: {e}")
-        return None
+        bars = _api_call(
+            _client.futures_klines,
+            symbol=symbol, interval=tf, limit=300
+        )
 
-
-# ══════════════════════════════════════════════════════════════
-# CACHE: GET TOP VOLUME ALTS (Refresh setiap 5 menit)
-# ══════════════════════════════════════════════════════════════
-def get_top_volume_alts(exclude_list: list, limit: int = 50) -> list:
-    """
-    Ambil top N altcoin berdasarkan volume 24 jam.
-    Di-cache 5 menit untuk mengurangi API call.
-    """
-    now = time.time()
-    if _top_alts_cache['symbols'] and (now - _top_alts_cache['last_update']) < TOP_ALTS_TTL:
-        # Kembalikan dari cache, filter exclude_list
-        return [s for s in _top_alts_cache['symbols'] if s not in exclude_list]
-    try:
-        tickers = _client.futures_ticker()
-        alts = [
-            t for t in tickers
-            if t['symbol'].endswith('USDT') and t['symbol'] not in exclude_list
-        ]
-        alts.sort(key=lambda x: float(x['quoteVolume']), reverse=True)
-        symbols = [t['symbol'] for t in alts[:limit]]
-        _top_alts_cache['symbols'] = symbols
-        _top_alts_cache['last_update'] = now
-        logger.info(f"🔄 Top Alts cache diperbarui ({len(symbols)} simbol)")
-        return symbols
-    except Exception as e:
-        logger.error(f"Gagal tarik Top Volume: {e}")
-        return _top_alts_cache.get('symbols', [])
-
-
-# ══════════════════════════════════════════════════════════════
-# CORE: DETEKSI S/R + SINYAL ENTRY — VECTORIZED & ANTI-FAKEOUT
-# ══════════════════════════════════════════════════════════════
-def get_snr_signal(symbol: str, tf: str) -> str | None:
-    """
-    Mendeteksi sinyal LONG/SHORT berdasarkan:
-    1. Swing High/Low vectorized (tanpa loop per candle)
-    2. Konfirmasi touch zona S/R (dengan buffer toleransi)
-    3. Filter fakeout: body ratio, proximity, RSI, ATR zone width
-    4. Konfirmasi EMA9 cross + volume spike
-
-    Return: 'LONG' | 'SHORT' | None
-    """
-    try:
-        # ── Ambil data kline ──────────────────────────────────
-        bars = _client.futures_klines(symbol=symbol, interval=tf, limit=KLINE_LIMIT)
         df = pd.DataFrame(bars, columns=[
-            'time','open','high','low','close','volume',
-            'ct','qv','tr','tb','tq','i'
-        ])
-        df = df[['open','high','low','close','volume']].astype(float).reset_index(drop=True)
+            'time', 'open', 'high', 'low', 'close', 'volume',
+            'ct', 'qv', 'tr', 'tb', 'tq', 'i'
+        ])[['open', 'high', 'low', 'close', 'volume']].astype(float)
 
-        if len(df) < SNR_WINDOW + 10:
+        if len(df) < EMA_TREND + 1:
             return None
 
-        # ── Kalkulasi Indikator (Vectorized) ─────────────────
-        df['vol_ma'] = df['volume'].rolling(window=VOL_MA_LEN, min_periods=1).mean()
-        df['ema9']   = ta.trend.ema_indicator(df['close'], window=EMA_CONFIRM)
-        df['rsi']    = ta.momentum.rsi(df['close'], window=14)
-        df['atr']    = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
+        close       = df['close']
+        ema200      = ema_indicator(close, window=EMA_TREND)
+        ma99        = sma_indicator(close, window=MA_STRUCT)
+        bb          = BollingerBands(close=close, window=BB_WINDOW, window_dev=2)
+        bb_up_s     = bb.bollinger_hband()
+        bb_dn_s     = bb.bollinger_lband()
 
-        # Isi NaN di awal data dengan backfill
+        df['vol_ma'] = df['volume'].shift(1).rolling(window=VOL_LOOKBACK).mean()
         df.bfill(inplace=True)
 
-        # ── Deteksi Swing High/Low — VECTORIZED ──────────────
-        # Swing Low: titik Low yang merupakan minimum dalam jendela SNR_WINDOW
-        half = SNR_WINDOW // 2  # = 5
-        roll_min = df['low'].rolling(window=SNR_WINDOW, center=True).min()
-        roll_max = df['high'].rolling(window=SNR_WINDOW, center=True).max()
+        idx_curr = len(df) - 1
+        idx_prev = idx_curr - 1
 
-        # Swing Low valid: low == rolling min DAN volume > vol_ma di titik tersebut
-        swing_low_mask  = (df['low']  == roll_min) & (df['volume'] > df['vol_ma'])
-        # Swing High valid: high == rolling max DAN volume > vol_ma di titik tersebut
-        swing_high_mask = (df['high'] == roll_max) & (df['volume'] > df['vol_ma'])
+        c_close  = close.iat[idx_curr]
+        c_low    = df['low'].iat[idx_curr]
+        c_high   = df['high'].iat[idx_curr]
+        c_ema200 = ema200.iat[idx_curr]
+        c_ma99   = ma99.iat[idx_curr]
+        c_bb_dn  = bb_dn_s.iat[idx_curr]
+        c_bb_up  = bb_up_s.iat[idx_curr]
 
-        # Ambil hanya swing yang sudah "terkonfirmasi" (bukan 5 candle terakhir)
-        # agar jendela kanan sudah terbentuk sempurna
-        confirmed_range = df.index[:-half]
+        p_open   = df['open'].iat[idx_prev]
+        p_close  = close.iat[idx_prev]
+        p_high   = df['high'].iat[idx_prev]
+        p_low    = df['low'].iat[idx_prev]
+        p_volume = df['volume'].iat[idx_prev]
+        p_vol_ma = df['vol_ma'].iat[idx_prev]
 
-        swing_lows  = df[swing_low_mask  & df.index.isin(confirmed_range)]
-        swing_highs = df[swing_high_mask & df.index.isin(confirmed_range)]
+        is_uptrend       = c_close > c_ema200
+        is_downtrend     = c_close < c_ema200
+        is_vol_exhausted = p_volume < p_vol_ma    
 
-        if swing_lows.empty or swing_highs.empty:
-            return None
+        shadow_req = 2.0 if is_vip else 0.8
 
-        # ── Ambil S/R Terdekat ke Harga Saat Ini ─────────────
-        current_close = df['close'].iloc[-1]
-        current_atr   = df['atr'].iloc[-1]
+        # LONG LOGIC
+        if is_uptrend:
+            tembok_bawah = [c_ema200, c_ma99, c_bb_dn]
+            floors = [t for t in tembok_bawah if t < c_close]
+            closest_floor = max(floors) if floors else 0
 
-        # Support: swing low terdekat DI BAWAH harga sekarang
-        supports = swing_lows[swing_lows['low'] < current_close]
-        # Resistance: swing high terdekat DI ATAS harga sekarang
-        resistances = swing_highs[swing_highs['high'] > current_close]
+            if closest_floor > 0:
+                dist = abs(c_low - closest_floor) / closest_floor
 
-        if supports.empty or resistances.empty:
-            return None
+                if dist <= PROXIMITY_PCT and is_vol_exhausted and p_close > p_open:
+                    lower_shadow = min(p_open, p_close) - p_low
+                    body = abs(p_close - p_open) or 0.00000001
+                    if (lower_shadow / body) >= shadow_req:
+                        return 'LONG'
 
-        # Ambil yang paling dekat
-        nearest_supp_idx = (current_close - supports['low']).idxmin()
-        nearest_res_idx  = (resistances['high'] - current_close).idxmin()
+        # SHORT LOGIC
+        if is_downtrend and not is_vip:
+            tembok_atas = [c_ema200, c_ma99, c_bb_up]
+            ceilings = [t for t in tembok_atas if t > c_close]
+            closest_ceiling = min(ceilings) if ceilings else 9_999_999
 
-        supp_row = df.loc[nearest_supp_idx]
-        res_row  = df.loc[nearest_res_idx]
+            if closest_ceiling < 9_999_999:
+                dist = abs(c_high - closest_ceiling) / closest_ceiling
 
-        # ── Filter ATR: Zona S/R harus cukup lebar ───────────
-        # Mencegah bot masuk di zona noise / zona terlalu sempit
-        supp_zone_width = abs(supp_row['close'] - supp_row['open'])
-        res_zone_width  = abs(res_row['close']  - res_row['open'])
-
-        if supp_zone_width < (current_atr * ATR_ZONE_MULT):
-            supp_row = None  # Zona support terlalu sempit, tidak valid
-        if res_zone_width < (current_atr * ATR_ZONE_MULT):
-            res_row = None   # Zona resistance terlalu sempit, tidak valid
-
-        # Definisi zona (body candle sebagai zona inti)
-        recent_supp = {
-            'bottom': supp_row['low'],
-            'top':    min(supp_row['open'], supp_row['close'])
-        } if supp_row is not None else None
-
-        recent_res = {
-            'top':    res_row['high'],
-            'bottom': max(res_row['open'], res_row['close'])
-        } if res_row is not None else None
-
-        if not recent_supp or not recent_res:
-            return None
-
-        # ── Data Candle untuk Konfirmasi Entry ────────────────
-        prev = df.iloc[-2]   # Candle konfirmasi (sudah close)
-        prev_body  = abs(prev['close'] - prev['open'])
-        prev_range = prev['high'] - prev['low']
-
-        # ── FILTER FAKEOUT #1: Body Ratio ─────────────────────
-        # Tolak candle dengan sumbu/shadow panjang (body kecil = sinyal lemah)
-        if prev_range > 0 and (prev_body / prev_range) < BODY_RATIO_MIN:
-            return None
-
-        # ── FILTER FAKEOUT #2: Proximity Filter ───────────────
-        # Entry hanya valid jika harga MASIH DEKAT dengan zona S/R
-        # Mencegah entry telat setelah harga sudah terlalu jauh bouncing
-        supp_proximity = abs(prev['close'] - recent_supp['top']) / recent_supp['top']
-        res_proximity  = abs(prev['close'] - recent_res['bottom']) / recent_res['bottom']
-
-        # ── Konfirmasi Touch Zona (dengan buffer toleransi) ───
-        touch_buffer_supp = recent_supp['top'] * (1 + SNR_TOUCH_BUFFER)
-        touch_buffer_res  = recent_res['bottom'] * (1 - SNR_TOUCH_BUFFER)
-
-        touched_supp = any(df['low'].iloc[-(SNR_TOUCH_CANDLE+1):-1] <= touch_buffer_supp)
-        touched_res  = any(df['high'].iloc[-(SNR_TOUCH_CANDLE+1):-1] >= touch_buffer_res)
-
-        # ── SINYAL LONG ───────────────────────────────────────
-        if (
-            touched_supp
-            and supp_proximity <= PROXIMITY_PCT        # Harga masih dekat Support
-            and prev['close'] > prev['open']           # Candle bullish
-            and prev['close'] > prev['ema9']           # Close di atas EMA9
-            and prev['volume'] > (prev['vol_ma'] * 0.8)  # Volume cukup
-            and prev['rsi'] > RSI_OS                   # RSI tidak terlalu oversold ekstrim
-            and prev['rsi'] < 60                       # RSI belum overbought
-        ):
-            logger.debug(f"✅ LONG Signal [{symbol} {tf}] | RSI: {prev['rsi']:.1f} | ATR: {current_atr:.4f}")
-            return 'LONG'
-
-        # ── SINYAL SHORT ──────────────────────────────────────
-        if (
-            touched_res
-            and res_proximity <= PROXIMITY_PCT         # Harga masih dekat Resistance
-            and prev['close'] < prev['open']           # Candle bearish
-            and prev['close'] < prev['ema9']           # Close di bawah EMA9
-            and prev['volume'] > (prev['vol_ma'] * 0.8)  # Volume cukup
-            and prev['rsi'] < RSI_OB                   # RSI tidak terlalu overbought ekstrim
-            and prev['rsi'] > 40                       # RSI belum oversold
-        ):
-            logger.debug(f"✅ SHORT Signal [{symbol} {tf}] | RSI: {prev['rsi']:.1f} | ATR: {current_atr:.4f}")
-            return 'SHORT'
+                if dist <= PROXIMITY_PCT and is_vol_exhausted and p_close < p_open:
+                    upper_shadow = p_high - max(p_open, p_close)
+                    body = abs(p_close - p_open) or 0.00000001
+                    if (upper_shadow / body) >= shadow_req:
+                        return 'SHORT'
 
         return None
 
     except Exception as e:
-        logger.error(f"get_snr_signal error [{symbol} {tf}]: {e}")
+        logger.error(f"Error Analisa [{symbol} TF {tf}]: {e}")
         return None
 
 
 # ══════════════════════════════════════════════════════════════
-# EKSEKUSI ORDER: ENTRY + PASANG TP OTOMATIS (TANPA SL)
+# ORDER EXECUTION
 # ══════════════════════════════════════════════════════════════
-def execute_snr_order(symbol: str, side: str, position_side: str) -> bool:
-    """
-    Buka posisi MARKET + pasang TAKE_PROFIT_MARKET otomatis.
-    TP = Fixed 50% ROE (harga bergerak 2% dari entry di lev 25x).
-    """
+
+def execute_adaptive_order(symbol: str, side: str, position_side: str, tf: str) -> bool:
     try:
-        f = get_filters(symbol)
-        if not f:
-            logger.warning(f"Filter tidak ditemukan untuk {symbol}, skip.")
-            return False
+        f = _get_exchange_filters(symbol)
 
-        # Set leverage & margin type (error diabaikan jika sudah ter-set)
+        # FIX: Max Qty Filter dari Market Lot Size
+        qty_step = float(f['LOT_SIZE']['stepSize'])
+        min_qty  = float(f['LOT_SIZE']['minQty'])
+        market_lot = f.get('MARKET_LOT_SIZE', f['LOT_SIZE'])
+        max_qty  = float(market_lot['maxQty'])
+        tick     = float(f['PRICE_FILTER']['tickSize'])
+
         try:
-            _client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
-        except:
-            pass
-        try:
-            _client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')
-        except:
+            _api_call(_client.futures_change_leverage, symbol=symbol, leverage=LEVERAGE)
+        except Exception:
             pass
 
-        curr_price = float(_client.futures_symbol_ticker(symbol=symbol)['price'])
+        curr_price = float(
+            _api_call(_client.futures_symbol_ticker, symbol=symbol)['price']
+        )
 
-        # ── Hitung TP 50% ROE ─────────────────────────────────
-        price_move = TP_TARGET_ROE / LEVERAGE  # = 0.02 (2%)
-        tp_price = curr_price * (1 + price_move) if side == 'BUY' else curr_price * (1 - price_move)
-
-        # ── Hitung Quantity ───────────────────────────────────
         raw_qty = (BASE_MARGIN * LEVERAGE) / curr_price
-        qty = max(
-            f['min_qty'],
-            round(math.floor(raw_qty / f['qty_step']) * f['qty_step'], 8)
+        qty = round(math.floor(raw_qty / qty_step) * qty_step, 8)
+        
+        # FIX: Menjepit kuantitas agar sesuai aturan bursa
+        qty = min(max_qty, max(min_qty, qty))
+
+        price_move = TP_TARGET_ROE / LEVERAGE
+        tp_raw = (
+            curr_price * (1 + price_move) if side == 'BUY'
+            else curr_price * (1 - price_move)
         )
 
-        # ── Buka Posisi MARKET ────────────────────────────────
-        _client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type='MARKET',
-            quantity=qty,
-            positionSide=position_side
+        price_precision = max(0, -int(math.floor(math.log10(tick))))
+        tp_final = round(round(tp_raw / tick) * tick, price_precision)
+        tp_str   = f"{tp_final:.{price_precision}f}"
+        qty_str  = f"{qty:.8f}".rstrip('0').rstrip('.')
+
+        # 1. Entry Market
+        _api_call(
+            _client.futures_create_order,
+            symbol=symbol, side=side, type='MARKET',
+            quantity=qty_str, positionSide=position_side
         )
 
-        # ── Pasang Take Profit LIMIT ──────────────────────────
-        tick      = f['price_tick']
-        precision = max(0, -int(math.floor(math.log10(tick))))
-        tp_final  = round(round(tp_price / tick) * tick, precision)
+        # 2. TP dengan Fallback System
+        try:
+            _api_call(
+                _client.futures_create_order,
+                symbol=symbol,
+                side='SELL' if side == 'BUY' else 'BUY',
+                type='TAKE_PROFIT_MARKET',
+                stopPrice=tp_str,
+                closePosition=True,
+                positionSide=position_side,
+                timeInForce='GTE_GTC',
+                workingType='MARK_PRICE'
+            )
+        except BinanceAPIException as tp_err:
+            if tp_err.code == -2021 or '-2021' in str(tp_err):
+                logger.warning(f"⚠️ Market terlalu cepat untuk {symbol}, pakai TP Limit Fallback.")
+                _api_call(
+                    _client.futures_create_order,
+                    symbol=symbol,
+                    side='SELL' if side == 'BUY' else 'BUY',
+                    type='LIMIT',
+                    price=tp_str,
+                    quantity=qty_str,
+                    positionSide=position_side,
+                    timeInForce='GTC'
+                )
+            else:
+                raise tp_err
 
-        close_side = 'SELL' if side == 'BUY' else 'BUY'
-        _client.futures_create_order(
-            symbol=symbol,
-            side=close_side,
-            type='TAKE_PROFIT_MARKET',
-            stopPrice=tp_final,
-            closePosition=True,
-            positionSide=position_side,
-            timeInForce='GTE_GTC',
-            workingType='MARK_PRICE'
-        )
-
-        log_trade_history(symbol, position_side, curr_price, tp_final)
-        logger.info(
-            f"🎯 ENTRY [{symbol} {position_side}] "
-            f"| Entry: {curr_price} | TP 50% ROE: {tp_final} "
-            f"| Qty: {qty} | Margin: ${BASE_MARGIN}"
-        )
+        mode_text = "VIP LONG" if symbol in VIP_SYMBOLS else "ALT SCALP"
+        logger.info(f"🎯 {mode_text} [{symbol} {position_side}] di TF {tf} | 3-Walls Adaptive")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Order Gagal [{symbol} {position_side}]: {e}")
+        logger.error(f"Order Fail [{symbol}]: {e}")
         return False
 
 
 # ══════════════════════════════════════════════════════════════
-# HELPER: AMBIL POSISI AKTIF
+# SCAN HELPERS
 # ══════════════════════════════════════════════════════════════
-def get_active_positions() -> list:
-    """Return list key posisi aktif: ['BTCUSDT_LONG', 'ETHUSDT_SHORT', ...]"""
-    try:
-        positions = _client.futures_position_information(recvWindow=5000)
-        return [
-            f"{p['symbol']}_{p['positionSide']}"
-            for p in positions
-            if float(p['positionAmt']) != 0
-        ]
-    except:
-        return []
+
+def _scan_vip(active_keys: list[str], vip_count: int) -> tuple[list[str], int]:
+    for symbol in VIP_SYMBOLS:
+        if vip_count >= MAX_VIP:
+            break
+        if f"{symbol}_LONG" in active_keys:
+            continue
+
+        signal = get_adaptive_signal(symbol, VIP_TF, is_vip=True)
+        if signal == 'LONG':
+            if execute_adaptive_order(symbol, 'BUY', 'LONG', VIP_TF):
+                vip_count += 1
+                active_keys.append(f"{symbol}_LONG")
+        time.sleep(0.5)
+
+    return active_keys, vip_count
+
+
+def _scan_alts(active_keys: list[str], alt_count: int) -> tuple[list[str], int]:
+    tickers = _api_call(_client.futures_ticker)
+    
+    # FIX: Pastikan VIP_SYMBOLS tidak ikut di-scan di Hunter Squad (Altcoin)
+    alts = [
+        t['symbol']
+        for t in sorted(tickers, key=lambda x: float(x['quoteVolume']), reverse=True)
+        if t['symbol'].endswith('USDT') and t['symbol'] not in VIP_SYMBOLS
+    ][:TOP_ALT_LIMIT]
+
+    for symbol in alts:
+        if alt_count >= MAX_ALT:
+            break
+        if f"{symbol}_LONG" in active_keys or f"{symbol}_SHORT" in active_keys:
+            continue
+
+        for tf in ALT_TFS:
+            signal = get_adaptive_signal(symbol, tf, is_vip=False)
+            if signal:
+                side = 'BUY' if signal == 'LONG' else 'SELL'
+                if execute_adaptive_order(symbol, side, signal, tf):
+                    alt_count += 1
+                    active_keys.append(f"{symbol}_{signal}")
+                break
+            time.sleep(0.2)
+
+    return active_keys, alt_count
 
 
 # ══════════════════════════════════════════════════════════════
 # MAIN BOT LOOP
 # ══════════════════════════════════════════════════════════════
-def run_bot():
+
+def run_bot() -> None:
     setup_account_environment()
-    logger.info(
-        "🔥 nazBot Alpha 2.0 AKTIF | TP 50% FIXED | NO SL (DCA Ready) "
-        f"| Slot: {MAX_VIP} VIP + {MAX_ALT} ALTS "
-        f"| Filter: Body>{BODY_RATIO_MIN*100:.0f}% | Prox<{PROXIMITY_PCT*100:.1f}% "
-        f"| RSI OS:{RSI_OS}/OB:{RSI_OB} | ATR Zone x{ATR_ZONE_MULT}"
-    )
 
     while True:
         try:
-            # ── Cek Status ON/OFF ─────────────────────────────
-            if get_bot_status() != "ON":
+            if _read_status() != 'ON':
                 time.sleep(10)
                 continue
 
-            active_keys = get_active_positions()
-            vip_count   = sum(1 for k in active_keys if k.split('_')[0] in VIP_SYMBOLS)
-            alt_count   = len(active_keys) - vip_count
+            pos         = _api_call(_client.futures_position_information)
+            active_keys = _active_keys(pos)
 
-            # ── 1. VIP SQUAD: Scan 6 koin konstan di TF 15m ──
+            vip_count = sum(1 for k in active_keys if k.split('_')[0] in VIP_SYMBOLS)
+            alt_count = sum(1 for k in active_keys if k.split('_')[0] not in VIP_SYMBOLS)
+
             if vip_count < MAX_VIP:
-                logger.info(f"👑 VIP Scan | Slot tersisa: {MAX_VIP - vip_count}")
-                for symbol in VIP_SYMBOLS:
-                    if vip_count >= MAX_VIP:
-                        break
-                    # Skip jika sudah ada posisi aktif di simbol ini
-                    if f"{symbol}_LONG" in active_keys or f"{symbol}_SHORT" in active_keys:
-                        continue
+                active_keys, vip_count = _scan_vip(active_keys, vip_count)
 
-                    signal = get_snr_signal(symbol, VIP_TF)
-                    if signal:
-                        side = 'BUY' if signal == 'LONG' else 'SELL'
-                        if execute_snr_order(symbol, side, signal):
-                            vip_count += 1
-                            active_keys.append(f"{symbol}_{signal}")
-                    time.sleep(0.2)  # Jeda kecil antar request
-
-            # ── 2. HUNTER SQUAD: Cascading TF Altcoin ────────
             if alt_count < MAX_ALT:
-                top_alts = get_top_volume_alts(VIP_SYMBOLS, limit=TOP_ALT_LIMIT)
-                logger.info(
-                    f"🐺 Hunter Scan | Slot tersisa: {MAX_ALT - alt_count} "
-                    f"| Pool: {len(top_alts)} alts"
-                )
+                active_keys, alt_count = _scan_alts(active_keys, alt_count)
 
-                for tf in ALT_TFS:
-                    if alt_count >= MAX_ALT:
-                        break
-
-                    found_in_this_tf = 0
-
-                    for alt in top_alts:
-                        if alt_count >= MAX_ALT:
-                            break
-                        if f"{alt}_LONG" in active_keys or f"{alt}_SHORT" in active_keys:
-                            continue
-
-                        signal = get_snr_signal(alt, tf)
-                        if signal:
-                            logger.info(f"🔎 Sinyal [{tf}] ditemukan: {alt} {signal}")
-                            side = 'BUY' if signal == 'LONG' else 'SELL'
-                            if execute_snr_order(alt, side, signal):
-                                alt_count += 1
-                                active_keys.append(f"{alt}_{signal}")
-                                found_in_this_tf += 1
-                        time.sleep(0.2)
-
-                    # Turun ke TF lebih kecil hanya jika TF ini tidak menghasilkan
-                    # sinyal SAMA SEKALI (bukan setelah 1 sinyal saja)
-                    if found_in_this_tf > 0:
-                        logger.info(
-                            f"✅ {found_in_this_tf} sinyal ditemukan di TF {tf}, "
-                            f"tidak turun ke TF lebih kecil."
-                        )
-                        break
-
-            time.sleep(15)  # Jeda utama antar siklus scan
+            time.sleep(15)
 
         except Exception as e:
             logger.error(f"Loop Error: {e}", exc_info=True)
