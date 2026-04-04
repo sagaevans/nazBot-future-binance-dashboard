@@ -1,340 +1,324 @@
-"""
-app.py — nazBot Alpha 2.0 Flask Dashboard
-Optimizations:
-  - Replaced bare open() calls with _atomic_write() using tempfile+os.replace()
-    to prevent race-condition file corruption between Flask and bot thread.
-  - _read_file_safe() wraps all reads with try/except so a mid-write read
-    never crashes the dashboard.
-  - Logging replaces bare print() for consistency.
-  - close_all() loops cancel per-symbol only for symbols that actually have
-    open orders (avoids redundant API calls).
-  - API calls in index() wrapped in a single try block with granular logging.
-  - PNL formula `realized_pnl = balance - 5000.0` is UNTOUCHED (testnet rule).
-"""
-
-import os
-import json
-import time
-import logging
-import tempfile
-from flask import Flask, render_template_string, request, redirect, url_for
+import os, logging, tempfile
+from flask import Flask, jsonify, request, render_template_string
 from binance.client import Client
 
-logger = logging.getLogger('app')
-
 app = Flask(__name__)
-client = Client(
-    os.environ.get('BINANCE_API_KEY'),
-    os.environ.get('BINANCE_API_SECRET'),
-    testnet=True
-)
+logger = logging.getLogger('dashboard')
 
-STATE_FILE   = 'status.txt'
-HISTORY_FILE = 'trades_history.json'
-SESSION_FILE = 'session.txt'
-VIP_SYMBOLS  = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT"]
+API_KEY = os.environ.get('BINANCE_API_KEY', '')
+API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
+client = Client(API_KEY, API_SECRET, testnet=True)
 
-# ── Thread-safe I/O helpers ───────────────────────────────────────────────────
+STATE_FILE = 'status.txt'
+INITIAL_BALANCE = 5000.0 
 
-def _read_file_safe(path: str, default: str = '') -> str:
-    """
-    Baca file dengan aman.
-    Jika file sedang ditulis (atau belum ada), kembalikan default.
-    """
-    try:
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                return f.read().strip()
-    except OSError:
-        pass
-    return default
-
-
-def _atomic_write(path: str, content: str) -> None:
-    """
-    Tulis file secara atomik menggunakan tempfile + os.replace().
-    Mencegah korupsi data jika Flask & bot thread menulis bersamaan.
-    """
-    dir_ = os.path.dirname(os.path.abspath(path)) or '.'
-    fd, tmp_path = tempfile.mkstemp(dir=dir_)
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(content)
-        os.replace(tmp_path, path)
-    except Exception:
-        os.unlink(tmp_path)
-        raise
-
-
-# ── HTML Template (tidak diubah secara fungsional) ───────────────────────────
+VIP_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT"]
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>nazBot Alpha 2.0 - Ultimate Hybrid</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="10">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nazBot Alpha 2.0</title>
     <style>
-        body { background: #0f172a; color: #f8fafc; font-family: 'Segoe UI', sans-serif; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;}
-        .header-title h1 { margin:0; color: #38bdf8; }
-        .header-title p { margin:5px 0 0 0; color: #94a3b8; }
-        .header-actions { display: flex; gap: 10px; flex-wrap: wrap;}
-        .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 1px solid #334155; box-shadow: 0 4px 6px rgba(0,0,0,0.3); overflow-x: auto;}
-        .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px; }
-        .stat-box { background: #334155; padding: 15px; border-radius: 10px; text-align: center; border-left: 4px solid #3b82f6; }
-        .stat-box h4 { margin: 0 0 5px 0; color: #94a3b8; font-size: 0.85em; text-transform: uppercase;}
-        .stat-box h2 { margin: 0; font-size: 1.8em; }
-        .btn { padding: 12px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; font-size: 0.95em; transition: 0.2s; }
-        .btn:hover { opacity: 0.8; }
-        .btn-start { background: #10b981; color: white; }
-        .btn-stop { background: #f59e0b; color: white; }
-        .btn-reset { background: #64748b; color: white; border: 1px solid #475569;}
-        .btn-close-all { background: #ef4444; color: white; border: 2px solid #b91c1c;}
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.95em; min-width: 600px;}
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #334155; }
-        th { color: #94a3b8; }
-        .text-green { color: #10b981; } .text-red { color: #ef4444; } .text-gold { color: #f59e0b; } .text-blue { color: #38bdf8; }
-        .badge { padding: 4px 8px; border-radius: 6px; font-size: 0.8em; font-weight: bold; border: 1px solid; }
-        .bg-long { background: rgba(16, 185, 129, 0.1); color: #10b981; border-color: #10b981; }
-        .bg-short { background: rgba(239, 68, 68, 0.1); color: #ef4444; border-color: #ef4444; }
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; padding-bottom: 20px; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
+        .header h1 { margin: 0; color: #38bdf8; font-size: 24px; }
+        .controls { display: flex; gap: 15px; }
+        button { padding: 10px 20px; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; cursor: pointer; transition: 0.2s; }
+        .btn-start { background-color: #eab308; color: #1e293b; }
+        .btn-stop { background-color: #ef4444; color: #f8fafc; }
+        .btn-close-all { background-color: #dc2626; color: #f8fafc; }
+        .btn-close-all:hover { background-color: #b91c1c; }
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background-color: #1e293b; padding: 20px; border-radius: 10px; border: 1px solid #334155; text-align: center; }
+        .stat-card h3 { margin: 0 0 10px 0; color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .stat-card h2 { margin: 0; font-size: 26px; font-weight: bold;}
+        .text-green { color: #4ade80 !important; }
+        .text-red { color: #f87171 !important; }
+        .text-white { color: #f8fafc !important; }
+        .table-container { background-color: #1e293b; padding: 20px; border-radius: 10px; border: 1px solid #334155; overflow-x: auto; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th, td { padding: 12px 15px; border-bottom: 1px solid #334155; }
+        th { color: #94a3b8; font-weight: 600; font-size: 14px; text-transform: uppercase; }
+        tbody tr:hover { background-color: #334155; }
+        .badge-long { background-color: rgba(74, 222, 128, 0.2); color: #4ade80; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px;}
+        .slot-tracker { display: inline-block; background-color: #0f172a; padding: 5px 12px; border-radius: 6px; font-size: 13px; color: #38bdf8; border: 1px solid #334155; margin-left: 15px; vertical-align: middle; }
+        .slot-tracker span { font-weight: bold; color: #f8fafc; }
+        .badge-lev { background-color: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 3px 6px; border-radius: 4px; font-weight: bold; font-size: 11px; margin-left: 10px;}
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="header-title">
-                <h1>🎯 nazBot Alpha 2.0</h1>
-                <p>Hybrid Sniper | TP Fixed 50% | Trend Filter (EMA 200)</p>
-            </div>
-            <div class="header-actions">
-                <form action="/toggle" method="post" style="margin:0;">
-                    {% if status == 'OFF' %}
-                        <button name="action" value="ON" class="btn btn-start">▶ START BOT</button>
-                    {% else %}
-                        <button name="action" value="OFF" class="btn btn-stop">⏸ STOP BOT</button>
-                    {% endif %}
-                </form>
-                <form action="/reset_stats" method="post" style="margin:0;" onsubmit="return confirm('Yakin ingin mereset kalkulasi Winrate ke 0%? (Memulai Sesi Baru)');">
-                    <button class="btn btn-reset">🔄 RESET STATS</button>
-                </form>
-                <form action="/close_all" method="post" style="margin:0;" onsubmit="return confirm('⚠️ PERINGATAN: Yakin ingin menutup SEMUA posisi berjalan secara Market dan membatalkan semua Take Profit?');">
-                    <button class="btn btn-close-all">☠️ CLOSE ALL POSITIONS</button>
-                </form>
-            </div>
-        </div>
 
-        <div class="grid-stats">
-            <div class="stat-box" style="border-color: #f59e0b;"><h4>Balance</h4><h2>${{ balance }}</h2></div>
-            <div class="stat-box" style="border-color: #06b6d4;">
-                <h4>Floating PNL (Active)</h4>
-                <h2 class="{{ 'text-green' if total_pnl > 0 else 'text-red' if total_pnl < 0 else '' }}">
-                    ${{ "%.2f"|format(total_pnl) }}
-                </h2>
-            </div>
-            <div class="stat-box" style="border-color: #38bdf8;">
-                <h4>Net Realized PNL</h4>
-                <h2 class="{{ 'text-green' if realized_pnl > 0 else 'text-red' if realized_pnl < 0 else '' }}">
-                    ${{ "%.2f"|format(realized_pnl) }}
-                </h2>
-            </div>
-            <div class="stat-box" style="border-color: #8b5cf6;">
-                <h4>Winrate (Sesi Ini)</h4>
-                <h2>{{ "%.1f"|format(winrate) }}%</h2>
-            </div>
-        </div>
-
-        <div class="card">
-            <h3 class="text-gold">⭐ VIP Squad ({{ vip_positions|length }} / 6 Posisi)</h3>
-            <table>
-                <thead>
-                    <tr><th>Symbol</th><th>Side</th><th>Lev</th><th>Margin</th><th>Entry Price</th><th>ROE (%)</th><th>Unrealized PNL</th></tr>
-                </thead>
-                <tbody>
-                    {% for p in vip_positions %}
-                    <tr>
-                        <td><b>{{ p['symbol'] }}</b></td>
-                        <td><span class="badge {{ 'bg-long' if p['side'] == 'LONG' else 'bg-short' }}">{{ p['side'] }}</span></td>
-                        <td>{{ p['leverage'] }}x</td>
-                        <td>${{ "%.2f"|format(p['margin']) }}</td>
-                        <td style="color:#cbd5e1;">${{ p['entry'] }}</td>
-                        <td class="{{ 'text-green' if p['roe'] > 0 else 'text-red' }}"><b>{{ "%.2f"|format(p['roe']) }}%</b></td>
-                        <td class="{{ 'text-green' if p['pnl'] > 0 else 'text-red' }}">${{ "%.2f"|format(p['pnl']) }}</td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="7" style="text-align: center; color: #94a3b8; padding: 20px;">VIP sedang mengintai di TF 15m... 👁️</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="card">
-            <h3 style="color: #ef4444;">🐺 Hunter Squad - Alts ({{ alt_positions|length }} / 8 Posisi)</h3>
-            <table>
-                <thead>
-                    <tr><th>Symbol</th><th>Side</th><th>Lev</th><th>Margin</th><th>Entry Price</th><th>ROE (%)</th><th>Unrealized PNL</th></tr>
-                </thead>
-                <tbody>
-                    {% for p in alt_positions %}
-                    <tr>
-                        <td><b>{{ p['symbol'] }}</b></td>
-                        <td><span class="badge {{ 'bg-long' if p['side'] == 'LONG' else 'bg-short' }}">{{ p['side'] }}</span></td>
-                        <td>{{ p['leverage'] }}x</td>
-                        <td>${{ "%.2f"|format(p['margin']) }}</td>
-                        <td style="color:#cbd5e1;">${{ p['entry'] }}</td>
-                        <td class="{{ 'text-green' if p['roe'] > 0 else 'text-red' }}"><b>{{ "%.2f"|format(p['roe']) }}%</b></td>
-                        <td class="{{ 'text-green' if p['pnl'] > 0 else 'text-red' }}">${{ "%.2f"|format(p['pnl']) }}</td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="7" style="text-align: center; color: #94a3b8; padding: 20px;">Pemburu sedang men-scan Altcoin liar... 🐺</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    <div class="header">
+        <h1>🎯 nazBot Alpha 2.0 
+            <span style="font-size: 14px; color:#94a3b8;">| Sniper Mode: NO-SL</span>
+            <span class="badge-lev">⚡ MAX LEVERAGE: 50x (Auto-Adjust)</span>
+        </h1>
+        <div class="controls">
+            <button id="toggleBtn" onclick="toggleBot()">LOADING...</button>
+            <button class="btn-close-all" onclick="closeAllPositions()">🚨 CLOSE ALL POSITIONS</button>
         </div>
     </div>
+
+    <div class="dashboard-grid">
+        <div class="stat-card">
+            <h3>Saldo USDT Aktif</h3>
+            <h2 id="balance" class="text-white">Loading...</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Net Profit / ROI</h3>
+            <h2 id="net_roi">Loading...</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Floating PNL / ROE</h3>
+            <h2 id="floating_pnl">Loading...</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Total Ekuitas</h3>
+            <h2 id="total_equity" class="text-white">Loading...</h2>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <h3 style="margin-top:0; color:#eab308; display: flex; align-items: center;">
+            👑 VIP Positions (<span id="vip_count">0</span>/6)
+        </h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Lev</th>
+                    <th>Margin</th>
+                    <th>Entry Price</th>
+                    <th>ROE (%)</th>
+                    <th>Unrealized PNL ($)</th>
+                </tr>
+            </thead>
+            <tbody id="vip-table">
+                <tr><td colspan="7" style="text-align:center; color:#94a3b8;">Fetching live data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="table-container">
+        <h3 style="margin-top:0; color:#38bdf8; display: flex; align-items: center;">
+            🚀 Altcoin Positions (<span id="alt_count">0</span>/8)
+        </h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Lev</th>
+                    <th>Margin</th>
+                    <th>Entry Price</th>
+                    <th>ROE (%)</th>
+                    <th>Unrealized PNL ($)</th>
+                </tr>
+            </thead>
+            <tbody id="alt-table">
+                <tr><td colspan="7" style="text-align:center; color:#94a3b8;">Fetching live data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let currentStatus = '{{ bot_status }}';
+
+        function updateToggleButton() {
+            const btn = document.getElementById('toggleBtn');
+            if(currentStatus === 'ON') {
+                btn.innerText = '⏸️ STOP BOT';
+                btn.className = 'btn-stop';
+            } else {
+                btn.innerText = '▶️ START BOT';
+                btn.className = 'btn-start';
+            }
+        }
+
+        async function toggleBot() {
+            const newStatus = currentStatus === 'ON' ? 'OFF' : 'ON';
+            try {
+                const res = await fetch('/api/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                const data = await res.json();
+                if(data.status === 'success') {
+                    currentStatus = data.bot_status;
+                    updateToggleButton();
+                }
+            } catch(e) { alert('Gagal mengubah status bot!'); }
+        }
+
+        async function closeAllPositions() {
+            if(!confirm("Yakin ingin MENUTUP SEMUA POSISI secara paksa (Market Order)?")) return;
+            try {
+                const res = await fetch('/api/close_all', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                fetchDashboardData();
+            } catch(e) { alert('Gagal menutup posisi!'); }
+        }
+
+        async function fetchDashboardData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+
+                if(data.status === 'success') {
+                    document.getElementById('balance').innerText = '$' + data.balance.toFixed(2);
+
+                    const roiElem = document.getElementById('net_roi');
+                    const netSign = data.net_profit >= 0 ? '+' : '-';
+                    roiElem.innerHTML = `${netSign}$${Math.abs(data.net_profit).toFixed(2)} <span style="font-size:16px; font-weight:normal; color:#cbd5e1;">(${netSign}${Math.abs(data.net_roi).toFixed(2)}%)</span>`;
+                    roiElem.className = data.net_profit >= 0 ? 'text-green' : 'text-red';
+
+                    const floatElem = document.getElementById('floating_pnl');
+                    if (data.total_unrealized === 0) {
+                        floatElem.innerHTML = `+$0.00 <span style="font-size:16px; font-weight:normal; color:#cbd5e1;">(0.00%)</span>`;
+                        floatElem.className = 'text-white';
+                    } else {
+                        const floatSign = data.total_unrealized > 0 ? '+' : '-';
+                        floatElem.innerHTML = `${floatSign}$${Math.abs(data.total_unrealized).toFixed(2)} <span style="font-size:16px; font-weight:normal; color:#cbd5e1;">(${floatSign}${Math.abs(data.floating_roe).toFixed(2)}%)</span>`;
+                        floatElem.className = data.total_unrealized > 0 ? 'text-green' : 'text-red';
+                    }
+
+                    document.getElementById('total_equity').innerText = '$' + data.total_equity.toFixed(2);
+                    document.getElementById('vip_count').innerText = data.vip_count;
+                    document.getElementById('alt_count').innerText = data.alt_count;
+
+                    const vipTbody = document.getElementById('vip-table');
+                    const altTbody = document.getElementById('alt-table');
+
+                    let vipHtml = '';
+                    let altHtml = '';
+
+                    data.positions.forEach(pos => {
+                        const sideBadge = pos.side === 'LONG' ? '<span class="badge-long">LONG</span>' : '<span class="badge-long">LONG</span>';
+                        const colorClass = pos.roe >= 0 ? 'text-green' : 'text-red';
+
+                        const rowHtml = `<tr>
+                            <td style="font-weight:bold; color:#f8fafc;">${pos.symbol}</td>
+                            <td>${sideBadge}</td>
+                            <td style="color:#38bdf8; font-weight:bold;">${pos.leverage}x</td>
+                            <td style="color:#cbd5e1;">$${pos.margin.toFixed(2)}</td>
+                            <td style="color:#cbd5e1;">$${pos.entryPrice}</td>
+                            <td class="${colorClass}" style="font-weight:bold;">${pos.roe.toFixed(2)}%</td>
+                            <td class="${colorClass}" style="font-weight:bold;">$${pos.unrealizedPNL.toFixed(2)}</td>
+                        </tr>`;
+
+                        if (pos.type === 'VIP') {
+                            vipHtml += rowHtml;
+                        } else {
+                            altHtml += rowHtml;
+                        }
+                    });
+
+                    vipTbody.innerHTML = vipHtml || '<tr><td colspan="7" style="text-align:center; color:#94a3b8;">Tidak ada posisi VIP aktif. Mengintai market... 👀</td></tr>';
+                    altTbody.innerHTML = altHtml || '<tr><td colspan="7" style="text-align:center; color:#94a3b8;">Tidak ada posisi Altcoin aktif. Mengintai market... 👀</td></tr>';
+                }
+            } catch (error) {
+                console.error("Gagal mengambil data:", error);
+            }
+        }
+
+        updateToggleButton();
+        setInterval(fetchDashboardData, 3000);
+        fetchDashboardData();
+    </script>
 </body>
 </html>
 """
 
-
-# ── Routes ────────────────────────────────────────────────────────────────────
+def _atomic_write(filepath, content):
+    fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(filepath))
+    with os.fdopen(fd, 'w') as f:
+        f.write(content)
+    os.replace(temp_path, filepath)
 
 @app.route('/')
 def index():
-    status           = _read_file_safe(STATE_FILE, 'OFF') or 'OFF'
-    session_start_ms = int(_read_file_safe(SESSION_FILE, '0') or 0)
-
-    balance        = 0.0
-    vip_positions  = []
-    alt_positions  = []
-    total_margin   = 0.0
-    total_unrealized = 0.0
-    realized_pnl   = 0.0
-    winrate        = 0.0
-
     try:
-        # ── Balance ──────────────────────────────────────────
-        acc = client.futures_account(recvWindow=6000)
-        balance = round(
-            float(next(a['walletBalance'] for a in acc['assets'] if a['asset'] == 'USDT')),
-            2
-        )
-        realized_pnl = balance - 5000.0  # Rumus absolut Testnet — JANGAN DIUBAH
+        with open(STATE_FILE, 'r') as f: status = f.read().strip() or "OFF"
+    except: status = "OFF"
+    return render_template_string(HTML_TEMPLATE, bot_status=status)
 
-        # ── Posisi Aktif ─────────────────────────────────────
-        all_pos = client.futures_position_information(recvWindow=6000)
-        for p in all_pos:
+@app.route('/api/data')
+def get_data():
+    try:
+        balances = client.futures_account_balance()
+        usdt_balance = next((float(b['balance']) for b in balances if b['asset'] == 'USDT'), 0.0)
+        acc = client.futures_account()
+        total_unrealized = float(acc['totalUnrealizedProfit'])
+
+        net_profit = usdt_balance - INITIAL_BALANCE
+        net_roi = (net_profit / INITIAL_BALANCE) * 100
+        floating_roe = (total_unrealized / INITIAL_BALANCE) * 100
+        total_equity = usdt_balance + total_unrealized
+
+        positions = client.futures_position_information()
+        active_pos = []
+        vip_c = 0
+        alt_c = 0
+
+        for p in positions:
             amt = float(p['positionAmt'])
-            if abs(amt) == 0:
-                continue
+            if amt != 0:
+                symbol = p['symbol']
+                mark_price = float(p['markPrice'])
+                entry_price = float(p['entryPrice'])
+                unrealized = float(p['unRealizedProfit'])
 
-            sym         = p['symbol']
-            side        = p['positionSide']
-            unrealized  = float(p['unRealizedProfit'])
-            entry_price = float(p['entryPrice'])
-            lev         = int(p.get('leverage', 25))
-            margin_used = (abs(amt) * entry_price) / lev if lev > 0 else 0
-            roe         = (unrealized / margin_used * 100) if margin_used > 0 else 0
+                leverage = float(p.get('leverage', 50))
+                margin = (abs(amt) * mark_price) / leverage
+                roe = (unrealized / margin * 100) if margin > 0 else 0
 
-            total_margin     += margin_used
-            total_unrealized += unrealized
+                is_vip = symbol in VIP_SYMBOLS
+                if is_vip: vip_c += 1
+                else: alt_c += 1
 
-            pos_data = {
-                'symbol': sym, 'side': side, 'margin': margin_used,
-                'entry': entry_price, 'roe': roe, 'pnl': unrealized, 'leverage': lev
-            }
-            if sym in VIP_SYMBOLS:
-                vip_positions.append(pos_data)
-            else:
-                alt_positions.append(pos_data)
+                active_pos.append({
+                    "symbol": symbol,
+                    "side": "LONG",
+                    "leverage": int(leverage),
+                    "margin": round(margin, 2),
+                    "entryPrice": entry_price,
+                    "roe": round(roe, 2),
+                    "unrealizedPNL": round(unrealized, 2),
+                    "type": "VIP" if is_vip else "ALT"
+                })
 
-        # ── Winrate (filter sesi) ─────────────────────────────
-        income_kwargs: dict = {'recvWindow': 6000}
-        if session_start_ms > 0:
-            income_kwargs.update({'limit': 1000, 'startTime': session_start_ms})
-        else:
-            income_kwargs['limit'] = 50
-
-        wins, losses = 0, 0
-        for income in client.futures_income_history(**income_kwargs):
-            if income['incomeType'] == 'REALIZED_PNL':
-                val = float(income['income'])
-                if val > 0:
-                    wins += 1
-                elif val < 0:
-                    losses += 1
-
-        total_trades = wins + losses
-        if total_trades > 0:
-            winrate = (wins / total_trades) * 100
-
+        return jsonify({
+            "status": "success", "balance": round(usdt_balance, 2), "net_profit": round(net_profit, 2),
+            "net_roi": round(net_roi, 2), "total_unrealized": round(total_unrealized, 2),
+            "floating_roe": round(floating_roe, 2), "total_equity": round(total_equity, 2),
+            "positions": active_pos, "vip_count": vip_c, "alt_count": alt_c
+        })
     except Exception as e:
-        logger.error(f"Dashboard error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-    total_roe = (total_unrealized / total_margin * 100) if total_margin > 0 else 0.0
-    vip_positions.sort(key=lambda x: x['roe'], reverse=True)
-    alt_positions.sort(key=lambda x: x['roe'], reverse=True)
+@app.route('/api/toggle', methods=['POST'])
+def toggle_bot():
+    new_status = request.get_json().get('status', 'OFF')
+    _atomic_write(STATE_FILE, new_status)
+    return jsonify({"status": "success", "bot_status": new_status})
 
-    return render_template_string(
-        HTML_TEMPLATE,
-        status=status, balance=balance,
-        vip_positions=vip_positions, alt_positions=alt_positions,
-        total_roe=total_roe, total_pnl=total_unrealized,
-        realized_pnl=realized_pnl, winrate=winrate
-    )
-
-
-@app.route('/toggle', methods=['POST'])
-def toggle():
-    new_status = request.form.get('action', 'OFF')
-    _atomic_write(STATE_FILE, new_status)   # atomic — tidak korupsi
-    return redirect(url_for('index'))
-
-
-@app.route('/reset_stats', methods=['POST'])
-def reset_stats():
-    # Catat waktu milidetik saat ini sebagai awal "Sesi Baru"
-    _atomic_write(SESSION_FILE, str(int(time.time() * 1000)))
-    return redirect(url_for('index'))
-
-
-@app.route('/close_all', methods=['POST'])
-def close_all():
-    """Tutup semua posisi aktif secara MARKET dan batalkan semua order TP/SL."""
+@app.route('/api/close_all', methods=['POST'])
+def close_all_positions():
     try:
-        # Batalkan open orders — hanya untuk symbol yang benar-benar punya order
-        open_orders = client.futures_get_open_orders()
-        symbols_with_orders: set[str] = {o['symbol'] for o in open_orders}
-        for sym in symbols_with_orders:
-            try:
-                client.futures_cancel_all_open_orders(symbol=sym)
-            except Exception as e:
-                logger.warning(f"Gagal cancel order {sym}: {e}")
-
-        # Tutup semua posisi aktif
         positions = client.futures_position_information()
         for p in positions:
             amt = float(p['positionAmt'])
-            if abs(amt) == 0:
-                continue
-            sym      = p['symbol']
-            pos_side = p['positionSide']
-            side     = 'SELL' if pos_side == 'LONG' else 'BUY'
-            try:
-                client.futures_create_order(
-                    symbol=sym, side=side, type='MARKET',
-                    quantity=abs(amt), positionSide=pos_side
-                )
-            except Exception as e:
-                logger.warning(f"Gagal close posisi {sym}: {e}")
+            if amt != 0:
+                client.futures_create_order(symbol=p['symbol'], side='SELL' if amt > 0 else 'BUY', type='MARKET', quantity=abs(amt), positionSide=p['positionSide'])
+        return jsonify({"status": "success", "message": "Semua posisi ditutup."})
+    except Exception as e: return jsonify({"status": "error"}), 500
 
-    except Exception as e:
-        logger.error(f"Error Panic Close All: {e}", exc_info=True)
+def run_web(): app.run(host='0.0.0.0', port=8080, use_reloader=False)
 
-    return redirect(url_for('index'))
-
-
-def run_web() -> None:
-    app.run(host='0.0.0.0', port=8080, threaded=True)
+if __name__ == '__main__': run_web()
