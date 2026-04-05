@@ -1,5 +1,5 @@
 # ==========================================
-# BETA 1.0 — nazBot Alpha 4.0 PRO
+# BETA v2.0 — Sniper System
 # FILE: main.py
 # FUNGSI: Peresmian System & Orchestrator
 # ==========================================
@@ -32,7 +32,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    logger.info("🚀 Memulai nazBot Alpha 4.0 PRO System [BETA 1.0]...")
+    logger.info("🚀 Memulai nazBot Sniper System [BETA v2.0]...")
 
     # Bot thread (non-daemon to allow clean shutdown)
     bot_thread = threading.Thread(target=run_bot, args=(shutdown_event,), name="BotEngine")
