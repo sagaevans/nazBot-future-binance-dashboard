@@ -1,69 +1,46 @@
-# 🎯 nazBot Beta v1.0 — Binance Futures Sniper Bot
+# 🎯 nazBot Sniper System [BETA v2.0]
+*Automated Futures Trading Bot with Dynamic DCA, 8-Column Ledger & Dashboard*
 
-**nazBot Beta v1.0** adalah sistem trading otomatis berbasis Python yang dirancang khusus untuk pasar Binance Futures. Bot ini menggunakan pendekatan "Sniper" yang sangat disiplin, menggabungkan konfluensi teknikal tingkat tinggi dengan manajemen risiko dinamis untuk menjaga keamanan modal $5000.
+nazBot Sniper System adalah bot trading otomatis berbasis Python yang dirancang untuk mengeksekusi posisi di Binance Futures. Versi BETA v2.0 menghadirkan arsitektur yang lebih kuat dengan filter *Anti-Pingpong*, Radar Emas (*Single Exposure*), dan pencatatan riwayat profit yang terintegrasi langsung dengan saldo riil Binance.
 
----
+## ✨ Fitur Utama (BETA v2.0)
+* **Escalation Timeframe & Anti-Pingpong:** Bot memiliki memori (cooldown 1 jam) untuk koin yang baru saja di-close, dan otomatis menaikkan analisis Timeframe (5m -> 15m) jika market terdeteksi *sideways*.
+* **Radar Emas (Single Exposure):** Pemantauan khusus untuk `XAUUSDT`, `XAUTUSDT`, dan `PAXGUSDT`. Sistem memastikan hanya 1 pair emas yang boleh aktif dalam satu waktu.
+* **8-Column Ledger System:** Pencatatan otomatis ke `profit_ledger.txt` setiap kali Take Profit/Stop Loss menyentuh target. Mencatat: Waktu, Pair, Profit $, ROE %, Total PnL, Total ROE, Saldo Riil, dan Growth Modal %.
+* **Dynamic DCA (Average Down):** Sistem injeksi margin 3 tahap berdasarkan persentase penurunan ROE untuk menyelamatkan posisi *floating*.
+* **Web Dashboard UI:** Visualisasi data *real-time* berbasis Flask & Chart.js, menampilkan grafik pertumbuhan saldo *live*, status koin aktif (VIP/ALT/GOLD), dan tabel jurnal transaksi.
 
-## 🚀 Fitur Utama (Beta v1.0)
+## 🛠️ Stack Teknologi
+* **Backend:** Python 3.x, Flask
+* **Trading API:** `python-binance`
+* **Indikator:** `ta` (Technical Analysis Library), `pandas`
+* **Frontend:** HTML5, CSS3, Chart.js
 
-### 1. Strategi "4 Walls" (Core Engine)
-Bot hanya akan melakukan entry jika harga membentur salah satu dari "Dinding Pertahanan":
-* **Dynamic Wall:** EMA200, MA99, atau Lower Bollinger Band.
-* **Static Support:** Area harga terendah (Low) dalam rentang 100 candle terakhir.
-* **Confirmation:** Ditambah dengan filter *Volume Exhaustion*, *Shadow Rejection* (ekor candle panjang), dan *RSI Oversold* (< 35).
+## ⚙️ Cara Penggunaan
+1. Pastikan `API_KEY` dan `API_SECRET` Binance sudah dimasukkan ke dalam *Environment Variables* (Secrets).
+2. Sesuaikan `START_BALANCE` di `bot_logic.py` dan `app.py` sesuai modal awal Anda untuk kalkulasi persentase *Growth*.
+3. Jalankan file utama (Orchestrator):
+   ```bash
+   python main.py
+   Buka URL Web Dashboard yang disediakan server (port 8080) dan klik "START BOT".
 
-### 2. Hybrid Timeframe Strategy (New)
-Sistem pembagian kuota untuk efisiensi dan kecepatan profit:
-* **4 Slot Altcoin Agresif:** Menggunakan Timeframe **5m** untuk eksekusi cepat (Scalping).
-* **4 Slot Altcoin Stabil:** Menggunakan Timeframe **15m ke atas** untuk trend yang lebih terjaga.
-* **8 Slot VIP:** (BTC, ETH, SOL, dll) dipantau pada timeframe multi (15m, 1h, 4h).
+🚀 POSSIBLE UPGRADE V3.0 (Blueprint)
+Pembaruan selanjutnya akan berfokus pada diferensiasi gaya trading antara koin VIP dan komoditas Emas untuk meminimalisir risiko dan memaksimalkan cuan di market bullish.
 
-### 3. Logika DCA Dinamis (Tabel Excel Logic)
-Manajemen anti-bengkak margin yang menyesuaikan dengan Leverage (Default 50x):
-* **DCA 1:** Aktif saat harga turun **2%** (ROE -100% di 50x) | Suntikan: 50% Margin Awal.
-* **DCA 2:** Aktif saat harga turun **3%** (ROE -150% di 50x) | Suntikan: 50% Margin Awal.
-* **DCA 3:** Aktif saat harga turun **4%** (ROE -200% di 50x) | Suntikan: 100% Margin Awal.
+1. Agresif VIP Mode (100% ROE Target): Khusus untuk kasta koin VIP, aturan Take Profit (TP) akan diubah secara statis menjadi 100% ROE dari margin entry. Mode Hit & Run akan dioptimalkan untuk mengejar target ganda.
 
-### 4. Smart Trend Filter
-Mencegah *Entry* saat market sedang terjun bebas (*Falling Knife*). Bot hanya akan melakukan **LONG** jika harga berada di atas **EMA200 (15m)** untuk koin Altcoin.
+2. Gold Semi-Spot Mode: Pendekatan investasi jangka panjang khusus untuk Emas (XAU, XAUT, PAXG):
 
----
+Max Leverage: Dikunci aman pada 10x (menyerupai Semi-Spot).
 
-## 📊 Dashboard & Monitoring
+Base Margin: Ditetapkan statis sebesar $20.
 
-Bot dilengkapi dengan Web Dashboard (Flask) yang menyediakan data real-time:
-* **Wallet Summary:** Saldo USDT aktif, Net Profit, dan Total Ekuitas.
-* **Termometer ROE:** Menampilkan "Akumulasi ROE Margin" secara murni untuk melihat total beban posisi aktif.
-* **Papan Skor (Success History):** Mencatat setiap koin yang berhasil Take Profit (TP 50%) lengkap dengan waktu eksekusi.
-* **Panic Button:** Fitur "Close All Positions" untuk menutup semua posisi secara instan jika diperlukan.
+No Take Profit: Koin emas akan dibiarkan floating mengikuti tren naik tanpa batas TP otomatis.
 
----
+Extreme Average Down: Jika posisi floating loss menyentuh -100% ROE, bot akan otomatis melakukan DCA / Average Down dengan menyuntikkan margin yang sama ($20) secara berulang tanpa batas maksimal DCA.
 
-## 🛠️ Spesifikasi Teknis
-
-* **Bahasa:** Python 3.10+
-* **Library Utama:** `python-binance`, `pandas`, `ta` (Technical Analysis Library), `Flask`.
-* **Environment:** Optimal dijalankan di Replit (mendukung mode 24/7).
-* **Koneksi:** Menggunakan `ThreadPoolExecutor` untuk pemindaian 50+ koin secara simultan (Parallel Scanning).
-
----
-
-## 📝 Cara Penggunaan
-
-1.  **API Setup:** Masukkan `BINANCE_API_KEY` dan `BINANCE_API_SECRET` ke dalam Secrets/Environment Variables.
-2.  **Initial Setup:** Jalankan `main.py`. Bot akan memulai server dashboard di port 8080.
-3.  **Activation:** Buka dashboard melalui link `.replit.dev`, lalu klik **START BOT**.
-4.  **Monitoring:** Pantau console untuk log "Heartbeat" setiap 60 detik untuk memastikan sistem OK.
-
----
-
-## 🛡️ Manajemen Risiko (Safety First)
-* **No Stop Loss (Sniper Mode):** Mengandalkan kekuatan DCA di level psikologis dan filter trend EMA200.
-* **Dynamic Margin Balancing:** Bot secara otomatis menyesuaikan jumlah koin yang dibeli (Quantity) berdasarkan leverage maksimal yang diizinkan Binance untuk setiap simbol.
-* **Rate Limiter:** Proteksi bawaan agar akun tidak terkena *ban* API Binance akibat request yang terlalu cepat.
-
-
-## 🛠️ Cara Instalasi (Telah diuji di Replit)
+   
+## 🛠️ TAMBAHAN  : Cara Instalasi (Telah diuji di Replit)
 
 1.  **Environment:** Pastikan Python 3.10+ terinstal.
 2.  **API Keys:** Masukkan `BINANCE_API_KEY` dan `BINANCE_API_SECRET` ke dalam *Secrets* Replit atau file `.env`.
