@@ -1,85 +1,65 @@
-# 🎯 nazBot Alpha 3.0
-**Bot Hybrid Sniper Dashboard & Long-Only DCA Berkinerja Tinggi untuk Binance Futures**
+# 🚀 nazBot Alpha 4.0 PRO (Sniper Edition)
+**Fully Automated Binance Futures Trading Bot with Institutional-Grade Risk Management**
 
-## 📌 Deskripsi Sistem
-nazBot Alpha 3.0 adalah bot trading otomatis kelas institusi untuk Binance Futures yang didesain khusus untuk kondisi *bull market* atau menangkap pantulan *major support* saat *bear market*. Bot ini murni menggunakan strategi **LONG ONLY** dengan jaring pengaman **DCA (Dollar Cost Averaging) Presisi 3 Lapis** dan beroperasi tanpa Stop Loss (Mode Survival/HODL).
-
-Sistem ini berjalan dengan arsitektur *multi-threading* yang memisahkan mesin *trading* utama dengan *dashboard web* (Flask) agar pemantauan berjalan *real-time* tanpa mengganggu proses pemindaian pasar.
+nazBot Alpha 4.0 PRO adalah algoritma trading otomatis berbasis Python yang didesain khusus untuk market Binance Futures. Menggunakan strategi **"Confirmation Bounce"** (Pantulan Terkonfirmasi) dengan arsitektur **4 Walls** dan sistem **Smart DCA**, bot ini bertindak sebagai penembak jitu (sniper) yang hanya masuk ke pasar saat probabilitas kemenangan sangat tinggi.
 
 ---
 
-## 🚀 Pembaruan Performa & Arsitektur v3.0
-Versi 3.0 membawa perombakan besar-besaran di ruang mesin untuk kecepatan, efisiensi memori, dan keamanan API:
-* **NumPy Vectorization:** Mengganti iterasi Pandas standar dengan operasi vektor NumPy dan *downcasting* `float32` untuk kalkulasi indikator yang super cepat dan hemat RAM.
-* **Token Bucket Rate Limiter:** Membatasi permintaan API secara ketat (20 panggilan/detik) untuk menjamin bot kebal dari pemblokiran *Weight Limit* Binance (Error 429/418).
-* **Smart TTL Caching:** Menerapkan sistem *cache* dengan Time-To-Live (TTL) 5 detik untuk data Ticker dan metode *lookup* O(1) untuk filter koin, memangkas drastis panggilan jaringan yang berulang.
-* **Resilient API Handling:** Dilengkapi fitur *exponential backoff* dengan *randomized jitter* untuk menangani server *disconnect*, *timeout*, dan API *overload* tanpa membuat sistem *crash*.
-* **Graceful Shutdown:** Penambahan protokol `SIGINT/SIGTERM` di `main.py` agar sistem dan *thread* bisa dimatikan dengan aman tanpa risiko kebocoran memori (*memory leak*).
+## 🌟 What's New in v4.0 PRO?
+Pembaruan masif pada versi 4.0 difokuskan pada keamanan modal, penghindaran jebakan tren turun (*falling knife*), dan kecepatan eksekusi:
+
+* **[NEW] 15m EMA200 Trend Alignment Filter:** Altcoin tidak akan di- *entry* jika harga berada di bawah EMA200 (15m). Ini mencegah bot menangkap koin yang sedang *dumping* keras. (VIP bypass filter ini).
+* **[NEW] Hit & Run Strategy:** Target Take Profit (TP) dioptimalkan menjadi **50% ROE**. Eksekusi lebih cepat, meminimalkan paparan risiko di market yang *choppy*.
+* **[NEW] Noise Reduction:** Timeframe `5m` dihapus sepenuhnya dari Altcoin. Bot hanya fokus pada sinyal matang di TF `15m`, `1h`, dan `4h`.
+* **[NEW] Parallel Scanner Engine:** Menggunakan `ThreadPoolExecutor` untuk memindai 50 top Altcoin secara bersamaan (Asynchronous). Eksekusi tembakan kini hanya memakan waktu hitungan detik.
+* **[NEW] Heartbeat Monitor:** Sistem *logging* pemantau detak jantung server, memastikan *looping* berjalan mulus tanpa antrean (*bottleneck*).
 
 ---
 
-## ⚙️ Parameter Trading & Manajemen Risiko
+## 🧠 Core Logic: The "4 Walls" Strategy
+Bot ini **TIDAK MENGGUNAKAN LIMIT ORDER BUTA**. Bot menunggu konfirmasi pergerakan harga (*price action*) sebelum mengeksekusi *Market Order*. Sinyal `LONG` hanya akan valid jika 4 syarat "Tembok" ini terpenuhi pada saat penutupan *candle*:
 
-* **Mode Eksekusi:** LONG ONLY (Hanya mencari peluang pantulan/Buy).
-* **Leverage:** Fixed **50x**.
-    * *Auto-Adjust Feature:* Jika Binance menolak 50x karena batasan khusus koin (Error -4028), bot otomatis mendeteksi batas maksimal leverage (misal 20x atau 25x) dan menghitung ulang ukuran koin (*quantity*) agar ekuivalen nilai USD margin tetap sama.
-* **Take Profit (TP):** **100% ROE** berdasarkan margin aktual. Dipasang saat *entry* pertama menggunakan order `TAKE_PROFIT_MARKET` (dengan *fallback* ke `LIMIT` jika gagal).
-* **Stop Loss (SL):** **DISABLED** (Tidak ada cut loss otomatis).
-
----
-
-## 💰 Strategi Margin & DCA (Dollar Cost Averaging)
-Bot menggunakan sistem *average down* bertahap berdasarkan persentase minus ROE (*Return on Equity*). Alokasi dana dikunci dengan nominal USD absolut, bukan persentase lot, agar ketahanan portofolio sangat terukur.
-
-* **Entry Awal:** $5 USDT.
-* **DCA Tahap 1:** Tembak **$3 USDT** saat posisi menyentuh **-100% ROE**.
-* **DCA Tahap 2:** Tembak **$3 USDT** saat posisi menyentuh **-150% ROE**.
-* **DCA Tahap 3 (Max):** Tembak **$10 USDT** saat posisi menyentuh **-300% ROE**.
-
-*Catatan: Bot memiliki toleransi pembacaan selisih margin (`current_margin < BASE_MARGIN + X`) untuk memastikan bot tidak menembak DCA dua kali di tahap yang sama akibat fluktuasi harga.*
+1. **Volume Exhaustion:** Volume *candle* saat ini harus lebih kecil dari rata-rata volume (MA Volume) sebelumnya, menandakan tekanan jual sudah melemah.
+2. **Candle Rejection (Shadow/Ekor):** Harus ada penolakan harga dari bawah (Ekor bawah panjang). Rasio ekor harus **≥ 2.0x** (VIP) atau **≥ 1.2x** (Altcoin) dari ukuran badan *candle*.
+3. **ATR Dynamic Proximity:** Titik terendah *candle* harus menyentuh atau berada dalam jarak toleransi **15% ATR** dari garis pertahanan dinamis (EMA200, MA99, atau Lower Bollinger Band).
+4. **Static Support Validation:** Jika tidak ada garis dinamis, bot mencari level *Support* statis terkuat dari 100 *candle* terakhir.
 
 ---
 
-## 📊 Analisis Teknikal (Strategi "4 Tembok Sniper")
-Bot akan melakukan *entry* jika kondisi di bawah ini terpenuhi. Bot memadukan indikator dinamis (*Lagging*) dan indikator statis (*Leading*) sebagai tembok pantulan:
+## 🛡️ Risk Management & Defense System
+nazBot Alpha 4.0 PRO beroperasi dengan mode **NO-SL (Tanpa Stop Loss)**, digantikan oleh sistem pertahanan dana yang agresif namun terukur:
 
-1. **Floor Detection (4 Tembok):** Bot mendeteksi apakah harga terendah (*low*) menyentuh atau sangat dekat (toleransi 0.3%) dengan salah satu tembok berikut:
-   * **Tembok Dinamis:** EMA 200, SMA 99, atau Bollinger Bands Bawah (Window 20, Dev 2).
-   * **Tembok Statis (Historical Support):** Titik harga terendah dari 100 *candle* terakhir (mengabaikan 5 *candle* terbaru).
-2. **Candle Pattern (Rejection):**
-   * Jika harga menyentuh salah satu tembok, bot akan melihat *candle* sebelumnya.
-   * *Candle* tersebut wajib ditutup *Bullish* (Close > Open).
-   * Wajib memiliki ekor bawah (*lower shadow*) yang panjang. Rasio ekor dibanding badan *candle* minimal **2.0x untuk VIP** dan **0.8x untuk Altcoin**.
-3. **Volume Exhaustion:** Volume *candle* sebelumnya harus lebih kecil dari rata-rata volume 5 periode terakhir (*Volume MA 5*), menandakan tekanan jual (*seller*) sudah melemah.
+### 1. Dynamic Margin Balancing
+Binance sering membatasi batas maksimal *leverage* pada koin *low-cap* (misal: mentok di 20x). Bot ini dilengkapi fitur **Notional Value Lock**. Jika *leverage* turun, bot otomatis menaikkan modal margin dasar agar "Daya Tembak" (*Notional Value* = Margin x Leverage) tetap setara dengan target (misal: $250 Notional).
 
----
-
-## 🗂️ Manajemen Portofolio (Alokasi Slot)
-Bot membagi jatah pemindaian pasar menjadi dua kategori dengan *Timeframe* (TF) yang berbeda untuk diversifikasi risiko:
-
-1.  **Koin VIP (Maksimal 6 Posisi Aktif)**
-    * Koin: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`, `BNBUSDT`, `ADAUSDT`, `DOTUSDT`.
-    * Timeframe: Khusus **15m** (Lebih stabil).
-2.  **Altcoin (Maksimal 8 Posisi Aktif)**
-    * Koin: Memindai Top 50 Altcoin berdasarkan volume harian tertinggi (mengabaikan koin VIP).
-    * Timeframe: Agresif mencari peluang di multi-TF: **1m, 3m, 5m, 15m, 1h, 4h**.
-    * Jika salah satu TF memberikan sinyal valid, bot akan *entry* dan melompati TF lainnya untuk koin tersebut.
+### 2. Smart DCA (Dollar Cost Averaging)
+Jika harga tembus ke bawah (*breakdown*) setelah *entry*, bot tidak akan panik cut-loss, melainkan menggelar jaring DCA berdasarkan ROE Absolut, bukan persentase harga:
+* **DCA 1:** Trigger di **-1.00 ROE** | Suntikan: **$3.0**
+* **DCA 2:** Trigger di **-1.50 ROE** | Suntikan: **$3.0**
+* **DCA 3:** Trigger di **-3.00 ROE** | Suntikan: **$10.0** (Suntikan raksasa terakhir untuk menarik harga rata-rata secara drastis).
 
 ---
 
-## 📁 Struktur File Sistem
+## ⚙️ Configuration Variables (in `bot_logic.py`)
+Anda dapat menyesuaikan selera risiko Anda melalui variabel global berikut:
 
-1.  `main.py`: File *launcher* utama dengan protokol *graceful shutdown*. Menjalankan server Flask dan mesin Trading secara paralel.
-2.  `app.py`: Modul Dashboard Web UI.
-    * Menampilkan saldo murni USDT, Net Profit, dan Floating PNL.
-    * Memisahkan pemantauan koin ke dalam 2 tabel: **VIP Positions** dan **Altcoin Positions**.
-    * Menampilkan *badge* informasi *Leverage Auto-Adjust*.
-3.  `bot_logic.py`: Mesin *core trading*.
-    * Berisi seluruh logika teknikal dan sistem 4 Tembok yang sudah dioptimasi dengan NumPy.
-    * Sistem eksekusi order dengan perlindungan *exponential backoff* untuk API Error.
-    * Sistem *log* cerdas yang memberitahu alasan *entry* (apakah karena Tembok Dinamis atau Tembok Statis).
+```python
+TARGET_LEVERAGE = 50       # Default Leverage utama
+BASE_MARGIN = 5.0          # Base target margin dalam USD
+TP_TARGET_ROE = 0.50       # Target 50% Take Profit
+MAX_VIP = 8                # Maksimal posisi koin VIP bersamaan
+MAX_ALT = 8                # Maksimal posisi koin Altcoin bersamaan
+TOP_ALT_LIMIT = 50         # Memindai 50 top koin berdasar Quote Volume
+🚀 Deployment Guide (Replit / Cloud)
+Bot ini didesain untuk berjalan 24/7 di environment cloud seperti Replit.
 
----
+Environment Variables: Setel BINANCE_API_KEY dan BINANCE_API_SECRET di menu Secrets (Replit) atau .env. Pastikan API Key Anda memiliki izin "Enable Futures".
+
+Dependensi: Instal library via terminal: pip install pandas ta python-binance flask
+
+Keep-Alive (Mini Server): Bot dilengkapi Flask Web Server mini bawaan. Gunakan layanan seperti UptimeRobot dan ping URL bot setiap 5 menit agar mesin tidak masuk ke mode Sleep.
+
+Execution: Jalankan tombol Run atau ketik python main.py di terminal. Pantau aktivitas di Console.
 
 ## 🛠️ Cara Instalasi (Telah diuji di Replit)
 
@@ -91,4 +71,4 @@ Bot membagi jatah pemindaian pasar menjadi dua kategori dengan *Timeframe* (TF) 
 ---
 
 ## ⚠️ Disclaimer
-*Trading Futures memiliki risiko tinggi. nazBot Alpha 3.0 adalah alat bantu teknis. Pengguna bertanggung jawab penuh atas konfigurasi leverage dan margin yang digunakan. Sangat disarankan untuk melakukan uji coba secara menyeluruh di Testnet Binance sebelum digunakan di akun Real.*
+*Trading Futures memiliki risiko tinggi. nazBot Alpha 4.0 adalah alat bantu teknis. Pengguna bertanggung jawab penuh atas konfigurasi leverage dan margin yang digunakan. Sangat disarankan untuk melakukan uji coba secara menyeluruh di Testnet Binance sebelum digunakan di akun Real.*
