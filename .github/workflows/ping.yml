@@ -1,0 +1,29 @@
+name: Ping Replit Every 7 Minutes
+
+on:
+  schedule:
+    - cron: "*/7 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show current time
+        run: date
+
+      - name: Ping Replit App with Retry
+        run: |
+          echo "Pinging Replit..."
+          curl -L \
+          --retry 3 \
+          --retry-delay 5 \
+          --retry-connrefused \
+          -s \
+          -o /dev/null \
+          -w "HTTP Status: %{http_code}\n" \
+          https://a4226324-2a39-4918-a1c9-fbf99c47c638-00-1mpchq9z07wti.pike.replit.dev/
+
+      - name: Done
+        run: echo "Ping completed successfully"
