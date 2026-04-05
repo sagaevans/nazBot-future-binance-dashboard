@@ -1,5 +1,5 @@
 # ==========================================
-# BETA 1.0 — nazBot Alpha 4.0 PRO
+# nazBot Beta v1.0
 # FILE: app.py
 # FUNGSI: Server Dashboard & Logic Akumulasi ROE
 # ==========================================
