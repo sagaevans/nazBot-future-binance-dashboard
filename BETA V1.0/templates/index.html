@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nazBot Alpha 4.0 PRO</title>
+    <style>
+        body { 
+            background-color: #0f172a; 
+            color: #f8fafc; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+        }
+        .header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            border-bottom: 1px solid #334155; 
+            padding-bottom: 20px; 
+            margin-bottom: 20px; 
+            flex-wrap: wrap; 
+            gap: 15px; 
+        }
+        .header h1 { margin: 0; color: #38bdf8; font-size: 24px; }
+        .controls { display: flex; gap: 15px; }
+        button { 
+            padding: 10px 20px; 
+            border: none; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            font-size: 14px; 
+            cursor: pointer; 
+            transition: 0.2s; 
+        }
+        .btn-start { background-color: #eab308; color: #1e293b; }
+        .btn-stop { background-color: #ef4444; color: #f8fafc; }
+        .btn-close-all { background-color: #dc2626; color: #f8fafc; }
+        .btn-close-all:hover { background-color: #b91c1c; }
+        
+        .dashboard-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); 
+            gap: 20px; 
+            margin-bottom: 30px; 
+        }
+        .stat-card { 
+            background-color: #1e293b; 
+            padding: 20px; 
+            border-radius: 10px; 
+            border: 1px solid #334155; 
+            text-align: center; 
+        }
+        .stat-card h3 { 
+            margin: 0 0 10px 0; 
+            color: #94a3b8; 
+            font-size: 12px; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+        }
+        .stat-card h2 { margin: 0; font-size: 26px; font-weight: bold;}
+        
+        /* Warna Khusus */
+        .text-green { color: #4ade80 !important; }
+        .text-red { color: #f87171 !important; }
+        .text-white { color: #f8fafc !important; }
+        .text-yellow { color: #eab308 !important; }
+        
+        .table-container { 
+            background-color: #1e293b; 
+            padding: 20px; 
+            border-radius: 10px; 
+            border: 1px solid #334155; 
+            overflow-x: auto; 
+            margin-bottom: 20px; 
+        }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th, td { padding: 12px 15px; border-bottom: 1px solid #334155; }
+        th { color: #94a3b8; font-weight: 600; font-size: 14px; text-transform: uppercase; }
+        tbody tr:hover { background-color: #334155; }
+        
+        .badge-long { 
+            background-color: rgba(74, 222, 128, 0.2); 
+            color: #4ade80; 
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-weight: bold; 
+            font-size: 12px;
+        }
+        .badge-lev { 
+            background-color: rgba(56, 189, 248, 0.2); 
+            color: #38bdf8; 
+            padding: 3px 6px; 
+            border-radius: 4px; 
+            font-weight: bold; 
+            font-size: 11px; 
+            margin-left: 10px;
+        }
+        .history-summary {
+            text-align: center;
+            padding: 15px;
+            background-color: rgba(74, 222, 128, 0.1);
+            border: 1px solid #4ade80;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎯 nazBot Alpha 4.0 PRO 
+            <span style="font-size: 14px; color:#94a3b8;">| Sniper Mode: NO-SL</span>
+            <span class="badge-lev">⚡ Dynamic Margin Balance Active</span>
+        </h1>
+        <div class="controls">
+            <button id="toggleBtn" onclick="toggleBot()">⏳ LOADING...</button>
+            <button class="btn-close-all" onclick="closeAllPositions()">🚨 CLOSE ALL POSITIONS</button>
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="stat-card">
+            <h3>Saldo USDT Aktif</h3>
+            <h2 id="balance" class="text-white">-</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Net Profit / ROI</h3>
+            <h2 id="net_roi">-</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Floating PNL / ROE Aktif</h3>
+            <h2 id="floating_pnl">-</h2>
+            <div id="accumulative_roe" style="margin-top: 8px; font-size: 14px; font-weight: bold; color: #38bdf8;">
+                Akumulasi ROE Margin: 0.00%
+            </div>
+        </div>
+        <div class="stat-card">
+            <h3>Total Ekuitas</h3>
+            <h2 id="total_equity" class="text-white">-</h2>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <h3 style="margin-top:0; color:#eab308;">👑 VIP Positions (<span id="vip_count">0</span>/8)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Symbol</th><th>Side</th><th>Lev</th><th>Margin</th><th>Entry Price</th><th>ROE (%)</th><th>Unrealized PNL ($)</th>
+                </tr>
+            </thead>
+            <tbody id="vip-table">
+                <tr><td colspan="7" style="text-align:center; color:#94a3b8;">Fetching live data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="table-container">
+        <h3 style="margin-top:0; color:#38bdf8;">🚀 Altcoin Positions (<span id="alt_count">0</span>/8)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Symbol</th><th>Side</th><th>Lev</th><th>Margin</th><th>Entry Price</th><th>ROE (%)</th><th>Unrealized PNL ($)</th>
+                </tr>
+            </thead>
+            <tbody id="alt-table">
+                <tr><td colspan="7" style="text-align:center; color:#94a3b8;">Fetching live data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="table-container">
+        <h3 style="margin-top:0; color:#4ade80;">✅ Riwayat Take Profit (Sesi Aktif)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Waktu (WIB)</th>
+                    <th>Pair / Symbol</th>
+                    <th>Status</th>
+                    <th>Hasil ROE</th>
+                </tr>
+            </thead>
+            <tbody id="history-table">
+                <tr><td colspan="4" style="text-align:center; color:#94a3b8;">Belum ada take profit di sesi ini. Tunggu sniper beraksi.</td></tr>
+            </tbody>
+        </table>
+        
+        <div class="history-summary text-green">
+            TOTAL AKUMULASI PROFIT: <span id="total_closed_roe">+0.00% ROE</span> | 
+            TOTAL TRADE SUKSES: <span id="total_success_trades">0</span>
+        </div>
+    </div>
+
+    <script>
+        // Menggunakan double bracket Jinja dari Flask untuk status awal
+        let currentStatus = '{{ bot_status }}';
+
+        function updateToggleButton() {
+            const btn = document.getElementById('toggleBtn');
+            if(currentStatus === 'ON') {
+                btn.innerText = '⏸️ STOP BOT';
+                btn.className = 'btn-stop';
+            } else {
+                btn.innerText = '▶️ START BOT';
+                btn.className = 'btn-start';
+            }
+        }
+
+        async function toggleBot() {
+            const newStatus = currentStatus === 'ON' ? 'OFF' : 'ON';
+            try {
+                const res = await fetch('/api/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                const data = await res.json();
+                if(data.status === 'success') {
+                    currentStatus = data.bot_status;
+                    updateToggleButton();
+                }
+            } catch(e) { alert('Gagal mengubah status!'); }
+        }
+
+        async function closeAllPositions() {
+            if(!confirm("🚨 Yakin ingin MENUTUP SEMUA POSISI secara paksa?")) return;
+            try {
+                const res = await fetch('/api/close_all', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                fetchDashboardData();
+            } catch(e) { alert('Gagal menutup posisi!'); }
+        }
+
+        async function fetchDashboardData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+
+                if(data.status === 'success') {
+                    // Update 4 Kotak Atas
+                    document.getElementById('balance').innerText = '$' + data.balance.toFixed(2);
+                    document.getElementById('total_equity').innerText = '$' + data.total_equity.toFixed(2);
+
+                    const roiElem = document.getElementById('net_roi');
+                    const netSign = data.net_profit >= 0 ? '+' : '';
+                    roiElem.innerHTML = `${netSign}$${data.net_profit.toFixed(2)} <span style="font-size:16px; color:#cbd5e1;">(${netSign}${data.net_roi.toFixed(2)}%)</span>`;
+                    roiElem.className = data.net_profit >= 0 ? 'text-green' : 'text-red';
+
+                    const floatElem = document.getElementById('floating_pnl');
+                    const floatSign = data.total_unrealized >= 0 ? '+' : '';
+                    floatElem.innerHTML = `${floatSign}$${data.total_unrealized.toFixed(2)} <span style="font-size:16px; color:#cbd5e1;">(${floatSign}${data.floating_roe.toFixed(2)}%)</span>`;
+                    floatElem.className = data.total_unrealized >= 0 ? 'text-green' : 'text-red';
+
+                    // Update Akumulasi ROE Margin Murni (Request Bos)
+                    const accRoeElem = document.getElementById('accumulative_roe');
+                    const accRoeSign = data.accumulative_roe_margin >= 0 ? '+' : '';
+                    accRoeElem.innerText = `Akumulasi ROE Margin: ${accRoeSign}${data.accumulative_roe_margin.toFixed(2)}%`;
+                    accRoeElem.style.color = data.accumulative_roe_margin >= 0 ? '#4ade80' : '#f87171';
+
+                    // Update Badge Jumlah Koin
+                    document.getElementById('vip_count').innerText = data.vip_count;
+                    document.getElementById('alt_count').innerText = data.alt_count;
+
+                    // Render Tabel VIP & Altcoin
+                    let vipHtml = ''; let altHtml = '';
+                    data.positions.forEach(pos => {
+                        const colorClass = pos.roe >= 0 ? 'text-green' : 'text-red';
+                        const sign = pos.roe >= 0 ? '+' : '';
+                        const rowHtml = `<tr>
+                            <td style="font-weight:bold; color:#f8fafc;">${pos.symbol}</td>
+                            <td><span class="badge-long">${pos.side}</span></td>
+                            <td style="color:#38bdf8; font-weight:bold;">${pos.leverage}x</td>
+                            <td style="color:#cbd5e1; font-weight:bold;">$${pos.margin.toFixed(2)}</td>
+                            <td style="color:#cbd5e1;">$${pos.entryPrice}</td>
+                            <td class="${colorClass}" style="font-weight:bold;">${sign}${pos.roe.toFixed(2)}%</td>
+                            <td class="${colorClass}" style="font-weight:bold;">${sign}$${pos.unrealizedPNL.toFixed(2)}</td>
+                        </tr>`;
+
+                        if (pos.type === 'VIP') vipHtml += rowHtml;
+                        else altHtml += rowHtml;
+                    });
+
+                    document.getElementById('vip-table').innerHTML = vipHtml || '<tr><td colspan="7" style="text-align:center; color:#94a3b8;">Tidak ada posisi VIP aktif. Mengintai market... 👀</td></tr>';
+                    document.getElementById('alt-table').innerHTML = altHtml || '<tr><td colspan="7" style="text-align:center; color:#94a3b8;">Tidak ada posisi Altcoin aktif. Mengintai market... 👀</td></tr>';
+
+                    // Render Tabel Riwayat History (Baru)
+                    let histHtml = '';
+                    if(data.closed_history && data.closed_history.length > 0) {
+                        data.closed_history.forEach(h => {
+                            histHtml += `<tr>
+                                <td style="color:#cbd5e1;">${h.time}</td>
+                                <td style="font-weight:bold; color:#f8fafc;">${h.symbol}</td>
+                                <td><span class="badge-long" style="background-color:rgba(74,222,128,0.2); color:#4ade80;">✅ Take Profit</span></td>
+                                <td class="text-green" style="font-weight:bold;">${h.roe}</td>
+                            </tr>`;
+                        });
+                        document.getElementById('history-table').innerHTML = histHtml;
+                    }
+
+                    // Update Papan Skor Bawah
+                    document.getElementById('total_closed_roe').innerText = data.total_closed_roe;
+                    document.getElementById('total_success_trades').innerText = data.total_success_trades;
+                }
+            } catch (error) { 
+                console.error("Dashboard fetching data error:", error); 
+            }
+        }
+
+        updateToggleButton();
+        // Refresh setiap 3 detik
+        setInterval(fetchDashboardData, 3000);
+        fetchDashboardData();
+    </script>
+</body>
+</html>
