@@ -1,7 +1,7 @@
 # ==========================================
-# BETA 1.0 — nazBot Beta v1.0
+# BETA v1.1 — nazBot Sniper System
 # FILE: bot_logic.py
-# FUNGSI: Mesin Sniper 4 Walls, DCA, & History
+# FUNGSI: Mesin Sniper, DCA Dinamis, History, & Kouta TF 5m
 # ==========================================
 
 from __future__ import annotations
@@ -32,10 +32,14 @@ TARGET_LEVERAGE = 50
 BASE_MARGIN = 5.0
 TP_TARGET_ROE = 0.50   # Target 50% ROE (Hit & Run)
 
-# DCA Levels (Absolut USD Power)
-DCA_1_TRIGGER, DCA_1_AMOUNT = -1.00, 3.0
-DCA_2_TRIGGER, DCA_2_AMOUNT = -1.50, 3.0
-DCA_3_TRIGGER, DCA_3_AMOUNT = -3.00, 10.0
+# --- PENGATURAN DCA DINAMIS ---
+DCA_1_DROP_PERCENT = 2.0  
+DCA_2_DROP_PERCENT = 3.0  
+DCA_3_DROP_PERCENT = 4.0  
+
+DCA_1_MARGIN_RATIO = 0.50  
+DCA_2_MARGIN_RATIO = 0.50  
+DCA_3_MARGIN_RATIO = 1.00  
 
 MAX_VIP, MAX_ALT = 8, 8
 EMA_TREND, MA_STRUCT, BB_WINDOW, VOL_LOOKBACK = 200, 99, 20, 5
@@ -44,18 +48,19 @@ ATR_WINDOW = 14
 VIP_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "XRPUSDT", "ALICEUSDT"]
 VIP_SET = set(VIP_SYMBOLS)
 VIP_TFS = ['15m', '1h', '4h']
-# ALT_TFS strictly 15m, 1h, 4h
-ALT_TFS = ['15m', '1h', '4h']
+
+# --- PEMBAGIAN TIMEFRAME ALTCOIN ---
+ALT_TFS_FAST = ['5m', '15m', '1h', '4h']  # Untuk 4 koin pertama
+ALT_TFS_SAFE = ['15m', '1h', '4h']        # Untuk 4 koin sisanya
 
 TOP_ALT_LIMIT = 50
 STATE_FILE = 'status.txt'
 
-# --- VARIABEL GLOBAL PAPAN SKOR (SUNTIKAN BETA 1.0) ---
+# --- VARIABEL GLOBAL PAPAN SKOR ---
 TOTAL_CLOSED_ROE = 0.0
 TOTAL_SUCCESS_TRADES = 0
 CLOSED_HISTORY = []
 
-# Gunakan testnet=True untuk simulasi. Ganti ke False jika pakai uang beneran.
 _client = Client(API_KEY, API_SECRET, testnet=True)
 
 # ---------- PERFORMANCE CACHING ----------
@@ -63,7 +68,6 @@ _exchange_filter_cache: Dict[str, dict] = {}
 _ticker_cache: Dict[str, Any] = {"data": None, "timestamp": 0}
 _TICKER_CACHE_TTL = 5.0
 
-# Rate limiter with thread safety
 _RATE_LIMIT_CALLS, _RATE_LIMIT_PERIOD = 20, 1.0
 _last_call_time = 0.0
 _rate_limit_lock = threading.Lock()
@@ -140,7 +144,7 @@ def _get_dynamic_leverage_and_margin(symbol: str, target_margin: float) -> Tuple
     except Exception:
         return TARGET_LEVERAGE, target_margin
 
-# ========== TREND ALIGNMENT FILTER (15m EMA200) for ALTCOINS ==========
+# ========== TREND ALIGNMENT FILTER (15m EMA200) ==========
 def _is_trend_aligned(symbol: str) -> bool:
     try:
         bars = _api_call(_client.futures_klines, symbol=symbol, interval='15m', limit=210)
@@ -251,28 +255,35 @@ def _monitor_positions(positions: List[dict]):
         actual_lev = float(p.get('leverage', TARGET_LEVERAGE))
 
         current_margin = (abs(amt) * mark_price) / actual_lev
-        roe = (unrealized / current_margin) if current_margin > 0 else 0
+        roe_percent = (unrealized / current_margin * 100) if current_margin > 0 else 0
 
-        _, dca1_adj = _get_dynamic_leverage_and_margin(symbol, DCA_1_AMOUNT)
-        _, dca2_adj = _get_dynamic_leverage_and_margin(symbol, DCA_2_AMOUNT)
-        _, dca3_adj = _get_dynamic_leverage_and_margin(symbol, DCA_3_AMOUNT)
         _, base_adj = _get_dynamic_leverage_and_margin(symbol, BASE_MARGIN)
 
-        if roe <= DCA_1_TRIGGER and current_margin < (base_adj + 2.0):
-            logger.info(f"💉 DCA TAHAP 1 untuk {symbol}")
-            execute_order(symbol, 'BUY', 'LONG', DCA_1_AMOUNT, is_dca=True)
-        elif roe <= DCA_2_TRIGGER and current_margin < (base_adj + dca1_adj + 2.0):
-            logger.info(f"💉 DCA TAHAP 2 untuk {symbol}")
-            execute_order(symbol, 'BUY', 'LONG', DCA_2_AMOUNT, is_dca=True)
-        elif roe <= DCA_3_TRIGGER and current_margin < (base_adj + dca1_adj + dca2_adj + 2.0):
-            logger.info(f"🔥 DCA TAHAP 3 TERAKHIR untuk {symbol}")
-            execute_order(symbol, 'BUY', 'LONG', DCA_3_AMOUNT, is_dca=True)
+        dca1_trigger = -(DCA_1_DROP_PERCENT * actual_lev)
+        dca2_trigger = -(DCA_2_DROP_PERCENT * actual_lev)
+        dca3_trigger = -(DCA_3_DROP_PERCENT * actual_lev)
 
-# ---------- PARALLEL SCANNER ----------
-def _scan_single_alt(symbol: str, active_keys: List[str]) -> Optional[Tuple[str, dict]]:
+        dca1_amount = base_adj * DCA_1_MARGIN_RATIO
+        dca2_amount = base_adj * DCA_2_MARGIN_RATIO
+        dca3_amount = base_adj * DCA_3_MARGIN_RATIO
+
+        if roe_percent <= dca1_trigger and current_margin < (base_adj + 2.0):
+            logger.info(f"💉 DCA TAHAP 1 [{symbol}] Triggered at ROE {roe_percent:.2f}% | Target Suntikan: ${dca1_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca1_amount, is_dca=True)
+
+        elif roe_percent <= dca2_trigger and current_margin < (base_adj + dca1_amount + 2.0):
+            logger.info(f"💉 DCA TAHAP 2 [{symbol}] Triggered at ROE {roe_percent:.2f}% | Target Suntikan: ${dca2_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca2_amount, is_dca=True)
+
+        elif roe_percent <= dca3_trigger and current_margin < (base_adj + dca1_amount + dca2_amount + 2.0):
+            logger.info(f"🔥 DCA TAHAP 3 TERAKHIR [{symbol}] Triggered at ROE {roe_percent:.2f}% | Target Suntikan: ${dca3_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca3_amount, is_dca=True)
+
+# ---------- PARALLEL SCANNER DENGAN KOUTA TIMEFRAME ----------
+def _scan_single_alt(symbol: str, active_keys: List[str], allowed_tfs: List[str]) -> Optional[Tuple[str, dict]]:
     if f"{symbol}_LONG" in active_keys:
         return None
-    for tf in ALT_TFS:
+    for tf in allowed_tfs:
         sig = get_adaptive_signal(symbol, tf, is_vip=False)
         if sig:
             if _is_trend_aligned(symbol):
@@ -294,11 +305,10 @@ def run_bot(stop_event: threading.Event) -> None:
     setup_account_environment()
 
     executor = ThreadPoolExecutor(max_workers=5)
-    loop_counter = 0
-    
-    # Track koin aktif untuk deteksi Take Profit (Saksi Bisu)
+
     _previous_active_keys = set()
     first_run = True
+    _last_heartbeat_time = 0.0
 
     try:
         while not _stop_event.is_set():
@@ -309,28 +319,24 @@ def run_bot(stop_event: threading.Event) -> None:
 
                 pos = _api_call(_client.futures_position_information)
                 _monitor_positions(pos)
-                
-                # Daftar posisi aktif saat ini
+
                 active_keys = [f"{p['symbol']}_{p['positionSide']}" for p in pos if float(p['positionAmt']) != 0]
                 current_active_set = set(active_keys)
 
-                # --- LOGIKA SAKSI BISU (PENCATAT HISTORY TP) ---
+                # --- LOGIKA SAKSI BISU ---
                 if not first_run:
                     closed_keys = _previous_active_keys - current_active_set
                     for k in closed_keys:
                         symbol = k.split('_')[0]
-                        
-                        # Karena mode NO-SL dan TP 50%, setiap posisi yang tertutup kita anggap sukses Take Profit
                         TOTAL_CLOSED_ROE += (TP_TARGET_ROE * 100)
                         TOTAL_SUCCESS_TRADES += 1
-                        
+
                         now_str = datetime.now().strftime("%H:%M:%S")
                         CLOSED_HISTORY.insert(0, {'time': now_str, 'symbol': symbol, 'roe': f"+{TP_TARGET_ROE * 100:.2f}%"})
-                        
-                        # Batasi histori agar tidak kepanjangan di memory (max 20)
+
                         if len(CLOSED_HISTORY) > 20:
                             CLOSED_HISTORY.pop()
-                
+
                 _previous_active_keys = current_active_set
                 first_run = False
 
@@ -353,13 +359,16 @@ def run_bot(stop_event: threading.Event) -> None:
                                     _previous_active_keys = current_active_set
                                     break
 
-                # ALT SCAN
+                # ALT SCAN (DENGAN PEMBAGIAN KOUTA TIMEFRAME)
                 if alt_count < MAX_ALT and not _stop_event.is_set():
                     tickers = _get_cached_ticker()
                     alts = [t['symbol'] for t in sorted(tickers, key=lambda x: float(x['quoteVolume']), reverse=True)
                             if t['symbol'].endswith('USDT') and t['symbol'] not in VIP_SET][:TOP_ALT_LIMIT]
 
-                    futures = [executor.submit(_scan_single_alt, s, active_keys) for s in alts]
+                    # Tentukan Timeframe berdasarkan sisa slot Altcoin
+                    allowed_alt_tfs = ALT_TFS_FAST if alt_count < 4 else ALT_TFS_SAFE
+
+                    futures = [executor.submit(_scan_single_alt, s, active_keys, allowed_alt_tfs) for s in alts]
                     for future in as_completed(futures):
                         if _stop_event.is_set(): break
                         res = future.result()
@@ -371,11 +380,11 @@ def run_bot(stop_event: threading.Event) -> None:
                                 current_active_set.add(f"{symbol}_LONG")
                                 _previous_active_keys = current_active_set
 
-                # --- HEARTBEAT LOGIC RESTORED ---
-                loop_counter += 1
-                if loop_counter >= 4:
-                    logger.info(f"👀 System OK | Memantau Market... (VIP: {vip_count}/{MAX_VIP} | ALT: {alt_count}/{MAX_ALT})")
-                    loop_counter = 0
+                # --- HEARTBEAT LOGIC PRESISI 60 DETIK ---
+                current_time = time.time()
+                if current_time - _last_heartbeat_time >= 60.0:
+                    logger.info(f"👀 System OK [BETA v1.0] | Memantau Market... (VIP: {vip_count}/{MAX_VIP} | ALT: {alt_count}/{MAX_ALT})")
+                    _last_heartbeat_time = current_time
 
                 for _ in range(15):
                     if _stop_event.is_set(): break
