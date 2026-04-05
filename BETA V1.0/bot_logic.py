@@ -1,7 +1,7 @@
 # ==========================================
-# BETA v1.1 — nazBot Sniper System
+# BETA v2.0 — nazBot Sniper System
 # FILE: bot_logic.py
-# FUNGSI: Mesin Sniper, DCA Dinamis, History, & Kouta TF 5m
+# FUNGSI: Escalation Timeframe (Anti-Pingpong) & Running Total History
 # ==========================================
 
 from __future__ import annotations
@@ -49,17 +49,20 @@ VIP_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT",
 VIP_SET = set(VIP_SYMBOLS)
 VIP_TFS = ['15m', '1h', '4h']
 
-# --- PEMBAGIAN TIMEFRAME ALTCOIN ---
-ALT_TFS_FAST = ['5m', '15m', '1h', '4h']  # Untuk 4 koin pertama
-ALT_TFS_SAFE = ['15m', '1h', '4h']        # Untuk 4 koin sisanya
+# --- PEMBAGIAN TIMEFRAME & ESCALATION (BETA 2.0) ---
+ALT_TFS_FAST = ['5m', '15m', '1h', '4h']
+ALT_TFS_SAFE = ['15m', '1h', '4h']
+ALT_TF_ORDER = ['5m', '15m', '1h', '4h'] # Kasta hierarki Timeframe
 
 TOP_ALT_LIMIT = 50
 STATE_FILE = 'status.txt'
 
 # --- VARIABEL GLOBAL PAPAN SKOR ---
 TOTAL_CLOSED_ROE = 0.0
+TOTAL_CLOSED_ROE_PERCENT = 0.0 # Running total angka murni
 TOTAL_SUCCESS_TRADES = 0
 CLOSED_HISTORY = []
+_coin_escalation_level: Dict[str, int] = {} # Buku hitam anti-pingpong
 
 _client = Client(API_KEY, API_SECRET, testnet=True)
 
@@ -279,7 +282,7 @@ def _monitor_positions(positions: List[dict]):
             logger.info(f"🔥 DCA TAHAP 3 TERAKHIR [{symbol}] Triggered at ROE {roe_percent:.2f}% | Target Suntikan: ${dca3_amount:.2f}")
             execute_order(symbol, 'BUY', 'LONG', dca3_amount, is_dca=True)
 
-# ---------- PARALLEL SCANNER DENGAN KOUTA TIMEFRAME ----------
+# ---------- PARALLEL SCANNER ----------
 def _scan_single_alt(symbol: str, active_keys: List[str], allowed_tfs: List[str]) -> Optional[Tuple[str, dict]]:
     if f"{symbol}_LONG" in active_keys:
         return None
@@ -300,7 +303,7 @@ def shutdown_bot():
         _stop_event.set()
 
 def run_bot(stop_event: threading.Event) -> None:
-    global _stop_event, TOTAL_CLOSED_ROE, TOTAL_SUCCESS_TRADES, CLOSED_HISTORY
+    global _stop_event, TOTAL_CLOSED_ROE, TOTAL_CLOSED_ROE_PERCENT, TOTAL_SUCCESS_TRADES, CLOSED_HISTORY, _coin_escalation_level
     _stop_event = stop_event
     setup_account_environment()
 
@@ -323,16 +326,26 @@ def run_bot(stop_event: threading.Event) -> None:
                 active_keys = [f"{p['symbol']}_{p['positionSide']}" for p in pos if float(p['positionAmt']) != 0]
                 current_active_set = set(active_keys)
 
-                # --- LOGIKA SAKSI BISU ---
+                # --- LOGIKA SAKSI BISU & ESCALATION TIER ---
                 if not first_run:
                     closed_keys = _previous_active_keys - current_active_set
                     for k in closed_keys:
                         symbol = k.split('_')[0]
-                        TOTAL_CLOSED_ROE += (TP_TARGET_ROE * 100)
+                        tp_val = (TP_TARGET_ROE * 100)
+                        TOTAL_CLOSED_ROE += tp_val
+                        TOTAL_CLOSED_ROE_PERCENT += tp_val
                         TOTAL_SUCCESS_TRADES += 1
 
+                        # ANTI-PINGPONG: Naikkan kasta Timeframe setelah TP
+                        if symbol not in VIP_SET:
+                            curr_level = _coin_escalation_level.get(symbol, 0)
+                            _coin_escalation_level[symbol] = curr_level + 1
+                            logger.info(f"📈 [ANTI-PINGPONG] {symbol} sukses TP! Naik level ke indeks TF: {_coin_escalation_level[symbol]}")
+
                         now_str = datetime.now().strftime("%H:%M:%S")
-                        CLOSED_HISTORY.insert(0, {'time': now_str, 'symbol': symbol, 'roe': f"+{TP_TARGET_ROE * 100:.2f}%"})
+                        # Format history digabung dengan Running Total
+                        history_str = f"+{tp_val:.2f}% | Tot: +{TOTAL_CLOSED_ROE_PERCENT:.2f}%"
+                        CLOSED_HISTORY.insert(0, {'time': now_str, 'symbol': symbol, 'roe': history_str})
 
                         if len(CLOSED_HISTORY) > 20:
                             CLOSED_HISTORY.pop()
@@ -359,16 +372,34 @@ def run_bot(stop_event: threading.Event) -> None:
                                     _previous_active_keys = current_active_set
                                     break
 
-                # ALT SCAN (DENGAN PEMBAGIAN KOUTA TIMEFRAME)
+                # ALT SCAN (DENGAN ESCALATION KASTA)
                 if alt_count < MAX_ALT and not _stop_event.is_set():
                     tickers = _get_cached_ticker()
                     alts = [t['symbol'] for t in sorted(tickers, key=lambda x: float(x['quoteVolume']), reverse=True)
                             if t['symbol'].endswith('USDT') and t['symbol'] not in VIP_SET][:TOP_ALT_LIMIT]
 
-                    # Tentukan Timeframe berdasarkan sisa slot Altcoin
-                    allowed_alt_tfs = ALT_TFS_FAST if alt_count < 4 else ALT_TFS_SAFE
+                    futures = []
+                    for s in alts:
+                        if f"{s}_LONG" in active_keys: continue
 
-                    futures = [executor.submit(_scan_single_alt, s, active_keys, allowed_alt_tfs) for s in alts]
+                        # 1. Tentukan jatah awal berdasarkan kuota
+                        base_tfs = ALT_TFS_FAST if alt_count < 4 else ALT_TFS_SAFE
+
+                        # 2. Cek Buku Hitam (Escalation Level)
+                        esc_level = _coin_escalation_level.get(s, 0)
+
+                        # Jika sudah mentok melewati 4h (indeks >= 4), abaikan koin ini sepenuhnya
+                        if esc_level >= len(ALT_TF_ORDER):
+                            continue
+
+                        # 3. Filter TF: Hanya izinkan TF yang posisinya lebih tinggi/sama dengan level eskalasi
+                        valid_tfs = [tf for tf in base_tfs if ALT_TF_ORDER.index(tf) >= esc_level]
+
+                        if not valid_tfs:
+                            continue # Koin ini sudah di-ban di TF kecil, dan tidak masuk kuota TF besar
+
+                        futures.append(executor.submit(_scan_single_alt, s, active_keys, valid_tfs))
+
                     for future in as_completed(futures):
                         if _stop_event.is_set(): break
                         res = future.result()
@@ -380,10 +411,10 @@ def run_bot(stop_event: threading.Event) -> None:
                                 current_active_set.add(f"{symbol}_LONG")
                                 _previous_active_keys = current_active_set
 
-                # --- HEARTBEAT LOGIC PRESISI 60 DETIK ---
+                # --- HEARTBEAT LOGIC ---
                 current_time = time.time()
                 if current_time - _last_heartbeat_time >= 60.0:
-                    logger.info(f"👀 System OK [BETA v1.0] | Memantau Market... (VIP: {vip_count}/{MAX_VIP} | ALT: {alt_count}/{MAX_ALT})")
+                    logger.info(f"👀 System OK [BETA v2.0] | Memantau Market... (VIP: {vip_count}/{MAX_VIP} | ALT: {alt_count}/{MAX_ALT})")
                     _last_heartbeat_time = current_time
 
                 for _ in range(15):
