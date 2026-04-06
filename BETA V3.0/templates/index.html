@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+\<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -98,7 +98,7 @@
             font-size: 11px; 
             margin-left: 10px;
         }
-        
+
         /* Container Grafik */
         .chart-container {
             position: relative;
@@ -345,13 +345,13 @@
             try {
                 const res = await fetch('/api/ledger');
                 const json = await res.json();
-                
+
                 // Jika ledger ADA isinya
                 if (json.status === 'success' && json.data.length > 0) {
                     const dataArray = json.data;
                     let ledgerHtml = '';
                     const reversedData = [...dataArray].reverse();
-                    
+
                     reversedData.forEach(row => {
                         const pnlColor = row.profit_usd.includes('-') ? 'text-red' : 'text-green';
                         const roeColor = row.roe_percent.includes('-') ? 'text-red' : 'text-green';
@@ -382,7 +382,7 @@
                 // JIKA LEDGER KOSONG (Belum TP pertama kali)
                 else {
                     document.getElementById('ledger-table').innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8;">Belum ada data ledger. Menunggu TP/SL pertama...</td></tr>';
-                    
+
                     // Logic Titik Nol: Masukkan saldo saat ini agar grafik tidak kosong
                     if (currentLiveBalance > 0 && lastLedgerLength !== 0) {
                         lastLedgerLength = 0;
