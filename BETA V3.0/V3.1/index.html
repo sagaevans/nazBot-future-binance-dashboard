@@ -6,17 +6,18 @@
     <title>nazBot Sniper BETA v3.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #0f172a; /* Slate 900 */
-            color: #e2e8f0; /* Slate 200 */
+            background-color: #0f172a; 
+            color: #e2e8f0; 
         }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         .glass-panel {
-            background-color: #1e293b; /* Slate 800 */
-            border: 1px solid #334155; /* Slate 700 */
+            background-color: #1e293b; 
+            border: 1px solid #334155; 
             border-radius: 0.75rem;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
@@ -41,17 +42,17 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button id="toggleBotBtn" onclick="toggleBot()" class="px-5 py-2 font-bold text-sm rounded-lg transition-all duration-300 shadow-lg">
+            <button id="toggleBotBtn" onclick="toggleBot()" class="px-6 py-2 font-bold text-sm rounded-lg transition-all duration-300 shadow-lg">
                 </button>
             <button onclick="closeAllPositions()" class="px-5 py-2 font-bold text-sm bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow-lg shadow-rose-600/30 transition-colors">
-                ☠️ CLOSE ALL POSITIONS
+                ☠️ CLOSE ALL
             </button>
         </div>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <div class="glass-panel p-5 text-center">
-            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Saldo USDT (Riil Binance)</p>
+            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Saldo USDT (Riil)</p>
             <h2 id="walletBalance" class="text-2xl font-mono font-bold text-white">$0.00</h2>
         </div>
         <div class="glass-panel p-5 text-center">
@@ -88,8 +89,7 @@
                             <th class="px-5 py-3 text-right">Unrealized ($)</th>
                         </tr>
                     </thead>
-                    <tbody id="goldTable" class="divide-y divide-slate-700/50">
-                        </tbody>
+                    <tbody id="goldTable" class="divide-y divide-slate-700/50"></tbody>
                 </table>
             </div>
         </div>
@@ -112,8 +112,7 @@
                             <th class="px-5 py-3 text-right">Unrealized ($)</th>
                         </tr>
                     </thead>
-                    <tbody id="vipTable" class="divide-y divide-slate-700/50">
-                        </tbody>
+                    <tbody id="vipTable" class="divide-y divide-slate-700/50"></tbody>
                 </table>
             </div>
         </div>
@@ -136,15 +135,14 @@
                             <th class="px-5 py-3 text-right">Unrealized ($)</th>
                         </tr>
                     </thead>
-                    <tbody id="altTable" class="divide-y divide-slate-700/50">
-                        </tbody>
+                    <tbody id="altTable" class="divide-y divide-slate-700/50"></tbody>
                 </table>
             </div>
         </div>
 
         <div class="glass-panel overflow-hidden">
             <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
-                <h3 class="font-bold text-emerald-400 flex items-center gap-2">📗 Buku Jurnal & Ledger Pertumbuhan (v3.1)</h3>
+                <h3 class="font-bold text-emerald-400 flex items-center gap-2">📗 Buku Jurnal & Ledger Pertumbuhan</h3>
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-sm">
@@ -160,15 +158,64 @@
                             <th class="px-5 py-3 text-right">Growth (%)</th>
                         </tr>
                     </thead>
-                    <tbody id="ledgerTable" class="divide-y divide-slate-700/50">
-                        </tbody>
+                    <tbody id="ledgerTable" class="divide-y divide-slate-700/50"></tbody>
                 </table>
+            </div>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-blue-400 flex items-center gap-2">📊 Visualisasi Tren Pertumbuhan Modal</h3>
+            </div>
+            <div class="p-5" style="height: 300px;">
+                <canvas id="growthChart"></canvas>
             </div>
         </div>
 
     </div>
 
     <script>
+        // Init Chart.js
+        let growthChart;
+        function updateChart(ledgerData) {
+            const ctx = document.getElementById('growthChart').getContext('2d');
+            const labels = ledgerData.map(row => row.time).reverse();
+            const dataPoints = ledgerData.map(row => parseFloat(row.saldo)).reverse();
+
+            if (growthChart) {
+                growthChart.data.labels = labels;
+                growthChart.data.datasets[0].data = dataPoints;
+                growthChart.update();
+            } else {
+                growthChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Saldo Wallet (USDT)',
+                            data: dataPoints,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            borderWidth: 3,
+                            pointRadius: 4,
+                            pointBackgroundColor: '#3b82f6'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+                            x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                        }
+                    }
+                });
+            }
+        }
+
         // Helper: Format Warna Uang
         function formatColor(val, isPercentage = false, prefix = '') {
             let num = parseFloat(val);
@@ -199,7 +246,7 @@
             let html = '';
             dataList.forEach(p => {
                 html += `
-                    <tr class="hover:bg-slate-800/50 transition-colors">
+                    <tr class="hover:bg-slate-800/50 transition-colors border-t border-slate-700/50">
                         <td class="px-5 py-3 font-bold text-slate-200">${p.symbol}</td>
                         <td class="px-5 py-3 text-center">${formatSide(p.side)}</td>
                         <td class="px-5 py-3 text-right text-slate-400">${p.leverage}x</td>
@@ -224,7 +271,7 @@
             let html = '';
             dataList.forEach(row => {
                 html += `
-                    <tr class="hover:bg-slate-800/50 transition-colors">
+                    <tr class="hover:bg-slate-800/50 transition-colors border-t border-slate-700/50">
                         <td class="px-5 py-3 text-slate-400">${row.time}</td>
                         <td class="px-5 py-3 font-bold text-slate-200">${row.symbol}</td>
                         <td class="px-5 py-3 text-right font-mono">${formatColor(row.profit.replace(/[+$]/g,''), false, '$')}</td>
@@ -239,32 +286,30 @@
             tbody.innerHTML = html;
         }
 
-        // Fetch Data Utama (Dipanggil setiap 2 detik)
+        // Fetch Data Utama
         async function updateDashboard() {
             try {
                 const res = await fetch('/api/data');
                 const data = await res.json();
                 if (data.status === 'success') {
                     
-                    // Update Button Status
+                    // Update Button Status (Simple Mode)
                     const btn = document.getElementById('toggleBotBtn');
                     if (data.bot_status === 'ON') {
-                        btn.innerHTML = '🟢 BOT IS RUNNING (CLICK TO STOP)';
-                        btn.className = "px-5 py-2 font-bold text-sm bg-emerald-900 border border-emerald-500 text-emerald-400 hover:bg-emerald-800 rounded-lg shadow-lg shadow-emerald-900/50 transition-all";
+                        btn.innerHTML = 'STOP BOT';
+                        btn.className = "px-6 py-2 font-bold text-sm bg-slate-700 border border-slate-600 text-rose-400 hover:bg-slate-600 rounded-lg shadow-lg transition-all";
                     } else {
-                        btn.innerHTML = '🔴 BOT IS STOPPED (CLICK TO START)';
-                        btn.className = "px-5 py-2 font-bold text-sm bg-slate-800 border border-slate-600 text-slate-400 hover:bg-slate-700 rounded-lg shadow-lg transition-all";
+                        btn.innerHTML = 'START BOT';
+                        btn.className = "px-6 py-2 font-bold text-sm bg-emerald-600 text-white hover:bg-emerald-500 rounded-lg shadow-lg shadow-emerald-600/30 transition-all";
                     }
 
                     // Update Cards
                     document.getElementById('walletBalance').innerText = '$' + parseFloat(data.wallet_balance).toFixed(2);
                     document.getElementById('totalEquity').innerText = '$' + parseFloat(data.equity).toFixed(2);
                     
-                    // Floating
                     const floatingStr = formatColor(data.total_unrealized, false, '$') + ' (' + formatColor(data.total_active_roe, true) + ')';
                     document.getElementById('floatingPnl').innerHTML = floatingStr;
 
-                    // Ledger Net
                     const netStr = formatColor(data.net_profit.replace(/[+$]/g,''), false, '$') + ' (' + formatColor(data.net_roe.replace(/[+%]/g,''), true) + ')';
                     document.getElementById('netProfit').innerHTML = netStr;
 
@@ -273,11 +318,13 @@
                     document.getElementById('vipCount').innerText = data.vip_positions.length;
                     document.getElementById('altCount').innerText = data.alt_positions.length;
 
-                    // Update Tables
+                    // Update Tables & Chart
                     renderTableRows('goldTable', data.gold_positions, 'Radar Emas mengintai, mencari sinyal volume valid... 🕵️‍♂️');
                     renderTableRows('vipTable', data.vip_positions, 'Tidak ada posisi VIP aktif. Menunggu momen Sniper... 🎯');
                     renderTableRows('altTable', data.alt_positions, 'Tidak ada posisi Altcoin aktif. Menunggu momen Sniper... 🎯');
+                    
                     renderLedger(data.ledger);
+                    updateChart(data.ledger);
                 }
             } catch (err) {
                 console.error("Dashboard update failed:", err);
@@ -294,16 +341,16 @@
             }
         }
 
-        // Action: Close All Positions (Dengan SweetAlert Konfirmasi)
+        // Action: Close All Positions
         function closeAllPositions() {
             Swal.fire({
                 title: 'Panic Close All?',
-                text: "Bot akan dimatikan otomatis, semua Limit TP/SL akan dibatalkan, dan semua posisi (Long & Short) akan di-Market Close. Yakin Bos?",
+                text: "Semua order dan antrean Limit akan dibatalkan, lalu ditutup otomatis. Yakin?",
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#e11d48',
                 cancelButtonColor: '#475569',
-                confirmButtonText: 'Ya, Sikat Habis!',
+                confirmButtonText: 'Ya, Tutup Semua!',
                 cancelButtonText: 'Batal',
                 background: '#1e293b',
                 color: '#f8fafc'
