@@ -1,0 +1,1269 @@
+Act as a Senior Quant Developer and Expert Binance Futures Trading Bot Architect. I have an existing automated trading bot hosted on Replit that uses a "Sniper" Price Action strategy. 
+
+Your task is to analyze and UPGRADE the trading signal logic (the "brain") to achieve a higher win rate, fewer fakeouts, and better entries. 
+
+However, you MUST strictly adhere to the following HARD CONSTRAINTS. Do not modify, suggest changes to, or alter any code related to these rules:
+
+---
+### 🔒 PART 1: THE HARD CONSTRAINTS (DO NOT TOUCH)
+1. POSITION SIZING & LEVERAGE: 
+   - Leverage is strictly 50x. 
+   - Base margin is strictly $5 per entry.
+2. TAKE PROFIT & STOP LOSS:
+   - Take Profit: ALWAYS 100% ROE using an instant LIMIT ORDER upon entry.
+   - Stop Loss (LONG): NO Stop loss. It relies on a 3-Stage Dynamic DCA.
+   - Stop Loss (SHORT): Strictly -150% ROE using a STOP MARKET order. No DCA for Shorts.
+3. PORTFOLIO & TIMEFRAME ALLOCATION:
+   - GOLD (1 Slot): "PAXGUSDT" only. Single exposure.
+   - VIP (8 Slots): Strong fundamentals (BTC, ETH, SOL, etc.). TF: 15m, 1h, 4h.
+   - ALTCOIN AGGRESSIVE (4 Slots): First 4 active alts must scan the 5-minute (5m) TF for fast scalping.
+   - ALTCOIN SAFE (4 Slots): Remaining 4 active alts scan 15m, 1h, 4h TFs. Total max Alts = 8.
+4. INFRASTRUCTURE & UI:
+   - The bot runs 100% on Replit using Flask as a Keep-Alive server (`app.py`) and a `bot_logic.py` engine.
+   - DO NOT modify `app.py` or `templates/index.html`. The dashboard UI, the 8-column ledger, and the balance chart are perfect and MUST remain untouched.
+5. DATA LOGGING (LEDGER):
+   - The bot records every closed trade into `profit_ledger.txt` using an 8-column pipe-separated format (|).
+   - Columns: TIME | PAIR | PROFIT $ | ROE % | TOTAL PNL $ | TOTAL ROE % | SALDO BINANCE | GROWTH %.
+   - DO NOT change the logging function (`catat_transaksi_v2`) or the file structure. The Dashboard depends on this exact 8-column format to render charts and tables.
+
+---
+### 🧠 PART 2: YOUR TASK (THE STRATEGY UPGRADE)
+Currently, my bot uses a "5-Layer Confluence" strategy in the `get_adaptive_signal` function:
+1. Trend Guard: EMA 200 (Long above, Short below).
+2. Dynamic Walls: MA 99 and Bollinger Bands (Entries on touches/rejections).
+3. Static Support/Resistance: 100-candle lookback extremes.
+4. Price Action: Rejection shadows/pinbars required.
+5. Volume Filter: Volume MUST be > 1.5x the 20-period Volume Moving Average to confirm institutional backing.
+
+YOUR OBJECTIVE:
+- Evaluate the effectiveness of this 5-layer strategy for 50x leverage scalping.
+- Improve, tweak, or completely rewrite the `get_adaptive_signal` function to make it deadlier and more accurate.
+- You may introduce new technical concepts (e.g., Order Blocks, RSI Divergence, MACD momentum, ATR volatility filters, Liquidity Sweeps) IF you think it's better than the current 5-layer strategy.
+- Ensure the logic works flawlessly for BOTH Long and Short positions.
+- Provide clear explanations for WHY your strategy improvements will work better.
+
+Below are my current scripts for your context. Please provide the upgraded `bot_logic.py` (or just the modified signal function) ensuring 100% compatibility with my Replit setup.
+
+---
+### 📂 MY CURRENT SCRIPTS & FILES:
+
+[BOT_LOGIC.PY]
+# ==========================================
+# nazBot Sniper System [BETA v3.1 - DUAL SNIPER & VOLUME]
+# FILE: bot_logic.py
+# FUNGSI: LONG (DCA) + SHORT (SL -150%), Limit TP 100%, Volume Filter
+# ==========================================
+
+from __future__ import annotations
+import math
+import os
+import time
+import logging
+import random
+import threading
+from datetime import datetime
+from typing import Optional, Dict, List, Any, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pandas as pd
+from ta.trend import ema_indicator, sma_indicator
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.momentum import RSIIndicator
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
+logger = logging.getLogger('bot')
+
+API_KEY = os.environ.get('BINANCE_API_KEY', '')
+API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
+
+# --- PENGATURAN MUTLAK PRO (v3.1) ---
+TARGET_LEVERAGE = 50
+BASE_MARGIN = 5.0
+TP_TARGET_ROE = 1.00       # Target 100% ROE (Double Modal)
+SHORT_SL_ROE = 1.50        # Stop Loss Khusus SHORT (-150%)
+
+# --- PENGATURAN VOLUME FILTER (v3.1 NEW) ---
+VOL_MA_PERIOD = 20         # Periode rata-rata volume
+VOL_MULTIPLIER = 1.5       # Sinyal butuh 1.5x dari rata-rata volume
+
+# --- PENGATURAN DCA DINAMIS 3-TAHAP (HANYA LONG) ---
+DCA_1_DROP_PERCENT = 2.0  
+DCA_2_DROP_PERCENT = 3.0  
+DCA_3_DROP_PERCENT = 4.0  
+
+DCA_1_MARGIN_RATIO = 0.50  
+DCA_2_MARGIN_RATIO = 0.50  
+DCA_3_MARGIN_RATIO = 1.00  
+
+MAX_VIP, MAX_ALT = 8, 8
+EMA_TREND, MA_STRUCT, BB_WINDOW = 200, 99, 20
+ATR_WINDOW = 14
+
+VIP_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "XRPUSDT", "ALICEUSDT"]
+VIP_SET = set(VIP_SYMBOLS)
+VIP_TFS = ['15m', '1h', '4h']
+
+# --- PEMBAGIAN TIMEFRAME & ESCALATION ---
+ALT_TFS_FAST = ['5m', '15m', '1h', '4h']
+ALT_TFS_SAFE = ['15m', '1h', '4h']
+ALT_TF_ORDER = ['5m', '15m', '1h', '4h'] 
+
+TOP_ALT_LIMIT = 50
+STATE_FILE = 'status.txt'
+
+# --- FITUR EMAS (SINGLE EXPOSURE) - PAXG ONLY ---
+GOLD_PAIRS = ["PAXGUSDT"]
+GOLD_SET = set(GOLD_PAIRS)
+GOLD_TFS = ['15m', '1h', '4h']
+
+LEDGER_FILE = 'profit_ledger.txt'
+
+# --- VARIABEL GLOBAL PAPAN SKOR ---
+TOTAL_CLOSED_ROE = 0.0
+TOTAL_CLOSED_ROE_PERCENT = 0.0 
+TOTAL_SUCCESS_TRADES = 0
+CLOSED_HISTORY = []
+_coin_escalation_level: Dict[str, int] = {} 
+
+_client = Client(API_KEY, API_SECRET, testnet=True) # Ganti testnet=False untuk real account
+
+# ---------- PERFORMANCE CACHING ----------
+_exchange_filter_cache: Dict[str, dict] = {}
+_ticker_cache: Dict[str, Any] = {"data": None, "timestamp": 0}
+_TICKER_CACHE_TTL = 5.0
+
+_RATE_LIMIT_CALLS, _RATE_LIMIT_PERIOD = 20, 1.0
+_last_call_time = 0.0
+_rate_limit_lock = threading.Lock()
+
+def _rate_limit():
+    global _last_call_time
+    with _rate_limit_lock:
+        now = time.monotonic()
+        elapsed = now - _last_call_time
+        min_interval = _RATE_LIMIT_PERIOD / _RATE_LIMIT_CALLS
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_call_time = time.monotonic()
+
+def _api_call(fn, *args, max_retries: int = 5, **kwargs):
+    for attempt in range(max_retries):
+        _rate_limit()
+        try:
+            return fn(*args, **kwargs)
+        except BinanceAPIException as e:
+            if e.code != -1121:
+                logger.warning(f"⚠️ Binance Error [{fn.__name__}]: {e.message}")
+            if e.code in (-1121, -4028, -2011, -2021, -2019):
+                raise
+            time.sleep(2 ** attempt + random.uniform(0, 1))
+        except Exception:
+            time.sleep(2 ** attempt)
+    raise RuntimeError(f"API Error: {fn.__name__}")
+
+# ========== FUNGSI GRAFIK SALDO & LEDGER DINAMIS ==========
+def get_binance_balance() -> float:
+    try:
+        account_info = _api_call(_client.futures_account)
+        for asset in account_info.get('assets', []):
+            if asset['asset'] == 'USDT':
+                return float(asset['walletBalance'])
+    except Exception: pass
+    return 0.0
+
+def get_initial_balance() -> float:
+    is_new = not os.path.exists(LEDGER_FILE) or os.path.getsize(LEDGER_FILE) == 0
+    if is_new:
+        start_bal = get_binance_balance()
+        if start_bal == 0: start_bal = 5000.0
+        with open('start_balance.txt', 'w') as f:
+            f.write(str(start_bal))
+        return start_bal
+    else:
+        if os.path.exists('start_balance.txt'):
+            with open('start_balance.txt', 'r') as f:
+                try: return float(f.read().strip())
+                except: pass
+        return 5000.0
+
+def _fetch_realized_pnl(symbol: str) -> float:
+    try:
+        income_data = _api_call(_client.futures_income_history, symbol=symbol, incomeType="REALIZED_PNL", limit=1)
+        if income_data:
+            return float(income_data[0]['income'])
+    except Exception: pass
+    return (BASE_MARGIN * TP_TARGET_ROE)
+
+def get_last_ledger_data() -> Tuple[float, float]:
+    if not os.path.exists(LEDGER_FILE) or os.path.getsize(LEDGER_FILE) == 0:
+        return 0.0, 0.0
+    try:
+        with open(LEDGER_FILE, 'r') as f:
+            lines = [l for l in f.readlines() if '|' in l and 'TIME' not in l and '---' not in l]
+            if not lines: return 0.0, 0.0
+            last_line = lines[-1]
+            parts = [p.strip() for p in last_line.split('|')]
+            if len(parts) >= 8:
+                tot_pnl = float(parts[4].replace('$', '').replace('+', ''))
+                tot_roe = float(parts[5].replace('%', '').replace('+', ''))
+                return tot_pnl, tot_roe
+    except: pass
+    return 0.0, 0.0
+
+def get_last_ledger_totals() -> float:
+    _, tot_roe = get_last_ledger_data()
+    return tot_roe
+
+def catat_transaksi_v2(symbol: str, pnl_usd: float, roe_percent: float):
+    prev_tot_pnl, prev_tot_roe = get_last_ledger_data()
+    new_tot_pnl = prev_tot_pnl + pnl_usd
+    new_tot_roe = prev_tot_roe + roe_percent
+
+    current_balance = get_binance_balance()
+    start_balance = get_initial_balance()
+    growth_pct = ((current_balance - start_balance) / start_balance) * 100 if start_balance > 0 else 0.0
+
+    now = datetime.now().strftime("%H:%M:%S")
+    log_line = (f"{now} | {symbol} | {pnl_usd:+.2f} | {roe_percent:+.2f}% | "
+                f"{new_tot_pnl:+.2f} | {new_tot_roe:+.2f}% | "
+                f"{current_balance:.2f} | {growth_pct:+.2f}%\n")
+
+    is_new = not os.path.exists(LEDGER_FILE) or os.path.getsize(LEDGER_FILE) == 0
+    with open(LEDGER_FILE, 'a') as f:
+        if is_new:
+            f.write("TIME | PAIR | PROFIT $ | ROE % | TOTAL PNL $ | TOTAL ROE % | SALDO BINANCE | GROWTH %\n")
+            f.write("-" * 110 + "\n")
+        f.write(log_line)
+    logger.info(f"💾 [LEDGER] {symbol} Terekam! Saldo: ${current_balance:.2f} (Growth: {growth_pct:+.2f}%)")
+
+def _get_exchange_filters(symbol: str) -> dict:
+    if symbol not in _exchange_filter_cache:
+        info = _api_call(_client.futures_exchange_info)
+        for s in info['symbols']:
+            _exchange_filter_cache[s['symbol']] = {x['filterType']: x for x in s['filters']}
+    return _exchange_filter_cache[symbol]
+
+def _get_cached_ticker() -> List[dict]:
+    global _ticker_cache
+    now = time.time()
+    if _ticker_cache["data"] is None or (now - _ticker_cache["timestamp"]) > _TICKER_CACHE_TTL:
+        _ticker_cache["data"] = _api_call(_client.futures_ticker)
+        _ticker_cache["timestamp"] = now
+    return _ticker_cache["data"]
+
+def _read_status() -> str:
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                return f.read().strip() or 'OFF'
+    except Exception: pass
+    return 'OFF'
+
+def setup_account_environment() -> None:
+    try:
+        _client.futures_change_position_mode(dualSidePosition=True)
+    except Exception: pass
+
+def _get_dynamic_leverage_and_margin(symbol: str, target_margin: float) -> Tuple[int, float]:
+    target_notional = target_margin * TARGET_LEVERAGE
+    try:
+        _client.futures_change_leverage(symbol=symbol, leverage=TARGET_LEVERAGE)
+        return TARGET_LEVERAGE, target_margin
+    except BinanceAPIException as e:
+        if e.code == -4028:
+            try:
+                brackets = _client.futures_leverage_bracket(symbol=symbol)
+                max_lev = int(brackets[0]['brackets'][0]['initialLeverage'])
+                _client.futures_change_leverage(symbol=symbol, leverage=max_lev)
+                adjusted_margin = target_notional / max_lev
+                return max_lev, adjusted_margin
+            except Exception: return TARGET_LEVERAGE, target_margin
+        return TARGET_LEVERAGE, target_margin
+    except Exception: return TARGET_LEVERAGE, target_margin
+
+# ========== TREND ALIGNMENT FILTER (Dinamis Long/Short) ==========
+def _is_trend_aligned(symbol: str, side: str) -> bool:
+    try:
+        bars = _api_call(_client.futures_klines, symbol=symbol, interval='15m', limit=210)
+        df = pd.DataFrame(bars, columns=['time','open','high','low','close','volume','ct','qv','tr','tb','tq','i'])
+        close = df['close'].astype(float)
+        ema200 = float(ema_indicator(close, window=200).iloc[-1])
+        current_price = float(close.iloc[-1])
+
+        if side == 'LONG': return current_price > ema200
+        if side == 'SHORT': return current_price < ema200
+        return False
+    except Exception: return False
+
+# ========== PRO SIGNAL LOGIC DUAL SNIPER & VOLUME ==========
+def get_adaptive_signal(symbol: str, tf: str, is_vip: bool) -> Optional[dict]:
+    try:
+        bars = _api_call(_client.futures_klines, symbol=symbol, interval=tf, limit=300)
+        df = pd.DataFrame(bars, columns=['time','open','high','low','close','volume','ct','qv','tr','tb','tq','i'])[['open','high','low','close','volume']].astype(float)
+
+        if len(df) < EMA_TREND + 1: return None
+
+        close, high, low, open_px = df['close'], df['high'], df['low'], df['open']
+        ema200 = ema_indicator(close, window=EMA_TREND)
+        ma99 = sma_indicator(close, window=MA_STRUCT)
+        bb = BollingerBands(close=close, window=BB_WINDOW, window_dev=2)
+        atr = AverageTrueRange(high, low, close, window=ATR_WINDOW).average_true_range()
+
+        # Menghitung Rata-rata Volume (20 Candle)
+        df['vol_ma'] = df['volume'].shift(1).rolling(window=VOL_MA_PERIOD).mean()
+        df.bfill(inplace=True)
+
+        idx_curr, idx_prev = len(df) - 1, len(df) - 2
+        c_close, c_low, c_high, c_atr = close.iat[idx_curr], low.iat[idx_curr], high.iat[idx_curr], atr.iat[idx_curr]
+        p_open, p_close, p_low, p_high = open_px.iat[idx_prev], close.iat[idx_prev], low.iat[idx_prev], high.iat[idx_prev]
+
+        p_vol = df['volume'].iat[idx_prev]
+        vol_ma = df['vol_ma'].iat[idx_prev]
+
+        # 1. FILTER VOLUME: Sinyal Batal Jika Volume Loyo
+        if p_vol < (vol_ma * VOL_MULTIPLIER):
+            return None
+
+        dynamic_proximity = c_atr * 0.15
+        shadow_req = 2.0 if is_vip else 1.2
+        c_ema200, c_ma99 = ema200.iat[idx_curr], ma99.iat[idx_curr]
+        c_bb_dn, c_bb_up = bb.bollinger_lband().iat[idx_curr], bb.bollinger_hband().iat[idx_curr]
+
+        # 2. LOGIKA LONG (Pantulan Support)
+        if p_close > p_open: # Candle Hijau
+            body = abs(p_close - p_open) or 0.00000001
+            if ((min(p_open, p_close) - p_low) / body) >= shadow_req:
+                dynamic_floors = [t for t in [c_ema200, c_ma99, c_bb_dn] if t < c_close]
+                closest_dynamic = max(dynamic_floors) if dynamic_floors else 0
+                if closest_dynamic > 0 and (abs(c_low - closest_dynamic)) <= dynamic_proximity:
+                    return {'side': 'LONG', 'reason': 'Support + Vol Spike'}
+
+        # 3. LOGIKA SHORT (Penolakan Resistance)
+        if p_close < p_open: # Candle Merah
+            body = abs(p_open - p_close) or 0.00000001
+            if ((p_high - max(p_open, p_close)) / body) >= shadow_req:
+                dynamic_ceilings = [t for t in [c_ema200, c_ma99, c_bb_up] if t > c_close]
+                closest_dynamic = min(dynamic_ceilings) if dynamic_ceilings else float('inf')
+                if closest_dynamic != float('inf') and (abs(c_high - closest_dynamic)) <= dynamic_proximity:
+                    return {'side': 'SHORT', 'reason': 'Resistance + Vol Spike'}
+
+        return None
+    except Exception: return None
+
+# ---------- EXECUTION ENGINE (DUAL & LIMIT TP/SL) ----------
+def execute_order(symbol: str, order_side: str, position_side: str, margin_to_use: float, is_dca: bool = False) -> bool:
+    try:
+        f = _get_exchange_filters(symbol)
+        qty_step = float(f['LOT_SIZE']['stepSize'])
+        min_qty = float(f['LOT_SIZE']['minQty'])
+        max_qty = float(f.get('MARKET_LOT_SIZE', f['LOT_SIZE'])['maxQty'])
+        tick = float(f['PRICE_FILTER']['tickSize'])
+        curr_price = float(_api_call(_client.futures_symbol_ticker, symbol=symbol)['price'])
+
+        actual_lev, adjusted_margin = _get_dynamic_leverage_and_margin(symbol, margin_to_use)
+
+        raw_qty = (adjusted_margin * actual_lev) / curr_price
+        qty = round(round(raw_qty / qty_step) * qty_step, 8)
+        qty = min(max_qty, max(min_qty, qty))
+        qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
+
+        # 1. Eksekusi Entry (Market Order)
+        _api_call(_client.futures_create_order, symbol=symbol, side=order_side, type='MARKET', quantity=qty_str, positionSide=position_side)
+
+        # 2. Pasang Target Profit (LIMIT) & Stop Loss (MARKET)
+        if not is_dca:
+            price_precision = max(0, -int(math.floor(math.log10(tick))))
+
+            if position_side == 'LONG':
+                tp_raw = curr_price * (1 + (TP_TARGET_ROE / actual_lev))
+                tp_str = f"{round(round(tp_raw / tick) * tick, price_precision):.{price_precision}f}"
+                try:
+                    _api_call(_client.futures_create_order, symbol=symbol, side='SELL', type='LIMIT', price=tp_str, quantity=qty_str, positionSide=position_side, timeInForce='GTC')
+                except Exception as e: logger.warning(f"Gagal pasang LIMIT TP LONG untuk {symbol}: {e}")
+
+            elif position_side == 'SHORT':
+                tp_raw = curr_price * (1 - (TP_TARGET_ROE / actual_lev))
+                sl_raw = curr_price * (1 + (SHORT_SL_ROE / actual_lev))
+
+                tp_str = f"{round(round(tp_raw / tick) * tick, price_precision):.{price_precision}f}"
+                sl_str = f"{round(round(sl_raw / tick) * tick, price_precision):.{price_precision}f}"
+
+                try:
+                    # LIMIT BUY untuk Take Profit (Bawah)
+                    _api_call(_client.futures_create_order, symbol=symbol, side='BUY', type='LIMIT', price=tp_str, quantity=qty_str, positionSide=position_side, timeInForce='GTC')
+                    # STOP MARKET BUY untuk Stop Loss (Atas)
+                    _api_call(_client.futures_create_order, symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=sl_str, closePosition=True, positionSide=position_side, timeInForce='GTC', workingType='MARK_PRICE')
+                except Exception as e: logger.warning(f"Gagal pasang TP/SL SHORT untuk {symbol}: {e}")
+
+        logger.info(f"🚀 {'DCA' if is_dca else 'ENTRY'} [{position_side}] {symbol} | Margin: ${adjusted_margin:.2f} | Lev: {actual_lev}x")
+        return True
+    except Exception as e:
+        logger.error(f"Order Gagal [{symbol}]: {e}")
+        return False
+
+# ---------- DCA MONITOR (HANYA UNTUK LONG) ----------
+def _monitor_positions(positions: List[dict]):
+    for p in positions:
+        amt = float(p['positionAmt'])
+        if amt == 0: continue
+
+        symbol, unrealized, mark_price = p['symbol'], float(p['unRealizedProfit']), float(p['markPrice'])
+        actual_lev = float(p.get('leverage', TARGET_LEVERAGE))
+
+        # JIKA POSISI SHORT (MINUS AMOUNT): Abaikan DCA, Biarkan TP/SL Bekerja.
+        if amt < 0: continue 
+
+        # JIKA POSISI LONG (PLUS AMOUNT): Jalankan 3-Tahap DCA
+        current_margin = (abs(amt) * mark_price) / actual_lev
+        roe_percent = (unrealized / current_margin * 100) if current_margin > 0 else 0
+
+        _, base_adj = _get_dynamic_leverage_and_margin(symbol, BASE_MARGIN)
+
+        dca1_trigger = -(DCA_1_DROP_PERCENT * actual_lev)
+        dca2_trigger = -(DCA_2_DROP_PERCENT * actual_lev)
+        dca3_trigger = -(DCA_3_DROP_PERCENT * actual_lev)
+
+        dca1_amount = base_adj * DCA_1_MARGIN_RATIO
+        dca2_amount = base_adj * DCA_2_MARGIN_RATIO
+        dca3_amount = base_adj * DCA_3_MARGIN_RATIO
+
+        if roe_percent <= dca1_trigger and current_margin < (base_adj + 2.0):
+            logger.info(f"💉 DCA TAHAP 1 [{symbol}] Trigger: {roe_percent:.2f}% | Beli: ${dca1_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca1_amount, is_dca=True)
+
+        elif roe_percent <= dca2_trigger and current_margin < (base_adj + dca1_amount + 2.0):
+            logger.info(f"💉 DCA TAHAP 2 [{symbol}] Trigger: {roe_percent:.2f}% | Beli: ${dca2_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca2_amount, is_dca=True)
+
+        elif roe_percent <= dca3_trigger and current_margin < (base_adj + dca1_amount + dca2_amount + 2.0):
+            logger.info(f"🔥 DCA TAHAP 3 [{symbol}] Trigger: {roe_percent:.2f}% | Beli: ${dca3_amount:.2f}")
+            execute_order(symbol, 'BUY', 'LONG', dca3_amount, is_dca=True)
+
+# ---------- PARALLEL SCANNER ----------
+def _scan_single_alt(symbol: str, active_keys: List[str], allowed_tfs: List[str]) -> Optional[Tuple[str, dict]]:
+    if f"{symbol}_LONG" in active_keys or f"{symbol}_SHORT" in active_keys: return None
+    for tf in allowed_tfs:
+        sig = get_adaptive_signal(symbol, tf, is_vip=False)
+        if sig:
+            if _is_trend_aligned(symbol, sig['side']):
+                logger.info(f"🎯 PRO Sinyal {symbol} ({tf}) [{sig['side']}] via {sig['reason']}")
+                return (symbol, sig)
+    return None
+
+_stop_event = None
+
+def shutdown_bot():
+    global _stop_event
+    if _stop_event: _stop_event.set()
+
+def run_bot(stop_event: threading.Event) -> None:
+    global _stop_event, TOTAL_CLOSED_ROE, TOTAL_CLOSED_ROE_PERCENT, TOTAL_SUCCESS_TRADES, CLOSED_HISTORY, _coin_escalation_level
+    _stop_event = stop_event
+    setup_account_environment()
+    get_initial_balance() 
+
+    executor = ThreadPoolExecutor(max_workers=5)
+    _previous_active_keys = set()
+    first_run = True
+    _last_heartbeat_time = 0.0
+
+    try:
+        while not _stop_event.is_set():
+            try:
+                if _read_status() != 'ON':
+                    time.sleep(10)
+                    continue
+
+                pos = _api_call(_client.futures_position_information)
+                _monitor_positions(pos)
+
+                active_keys = [f"{p['symbol']}_{p['positionSide']}" for p in pos if float(p['positionAmt']) != 0]
+                current_active_set = set(active_keys)
+
+                if not first_run:
+                    closed_keys = _previous_active_keys - current_active_set
+                    for k in closed_keys:
+                        symbol = k.split('_')[0]
+                        pnl_usd = _fetch_realized_pnl(symbol)
+                        roe_percent = (pnl_usd / BASE_MARGIN) * 100 
+
+                        catat_transaksi_v2(symbol, pnl_usd, roe_percent)
+
+                        TOTAL_CLOSED_ROE += roe_percent
+                        TOTAL_CLOSED_ROE_PERCENT += roe_percent
+                        TOTAL_SUCCESS_TRADES += 1
+
+                        if symbol not in VIP_SET and symbol not in GOLD_SET:
+                            curr_level = _coin_escalation_level.get(symbol, 0)
+                            _coin_escalation_level[symbol] = curr_level + 1
+
+                        now_str = datetime.now().strftime("%H:%M:%S")
+                        history_str = f"{pnl_usd:+.2f}$ ({roe_percent:+.2f}%) | Tot: +{TOTAL_CLOSED_ROE_PERCENT:.2f}%"
+                        CLOSED_HISTORY.insert(0, {'time': now_str, 'symbol': symbol, 'roe': history_str})
+                        if len(CLOSED_HISTORY) > 20: CLOSED_HISTORY.pop()
+
+                _previous_active_keys = current_active_set
+                first_run = False
+
+                vip_count = sum(1 for k in active_keys if k.split('_')[0] in VIP_SET)
+                alt_count = sum(1 for k in active_keys if k.split('_')[0] not in VIP_SET and k.split('_')[0] not in GOLD_SET)
+
+                gold_active_count = sum(1 for k in active_keys if k.split('_')[0] in GOLD_SET)
+                if gold_active_count == 0 and not _stop_event.is_set():
+                    for symbol in GOLD_PAIRS:
+                        if f"{symbol}_LONG" not in active_keys and f"{symbol}_SHORT" not in active_keys:
+                            for tf in GOLD_TFS:
+                                sig = get_adaptive_signal(symbol, tf, is_vip=True)
+                                if sig:
+                                    pos_side = sig['side']
+                                    order_side = 'BUY' if pos_side == 'LONG' else 'SELL'
+                                    logger.info(f"🏆 RADAR EMAS: [{pos_side}] Sinyal {symbol} ({tf}) via {sig['reason']}")
+                                    if execute_order(symbol, order_side, pos_side, BASE_MARGIN):
+                                        active_keys.append(f"{symbol}_{pos_side}")
+                                        current_active_set.add(f"{symbol}_{pos_side}")
+                                        _previous_active_keys = current_active_set
+                                        break 
+                            if gold_active_count > 0: break 
+
+                for symbol in VIP_SYMBOLS:
+                    if _stop_event.is_set(): break
+                    if vip_count >= MAX_VIP: break
+                    if f"{symbol}_LONG" not in active_keys and f"{symbol}_SHORT" not in active_keys:
+                        for tf in VIP_TFS:
+                            sig = get_adaptive_signal(symbol, tf, is_vip=True)
+                            if sig:
+                                pos_side = sig['side']
+                                order_side = 'BUY' if pos_side == 'LONG' else 'SELL'
+                                logger.info(f"👑 VIP Sinyal [{pos_side}] {symbol} ({tf}) via {sig['reason']}")
+                                if execute_order(symbol, order_side, pos_side, BASE_MARGIN):
+                                    vip_count += 1
+                                    active_keys.append(f"{symbol}_{pos_side}")
+                                    current_active_set.add(f"{symbol}_{pos_side}")
+                                    _previous_active_keys = current_active_set
+                                    break
+
+                if alt_count < MAX_ALT and not _stop_event.is_set():
+                    tickers = _get_cached_ticker()
+                    alts = [t['symbol'] for t in sorted(tickers, key=lambda x: float(x['quoteVolume']), reverse=True)
+                            if t['symbol'].endswith('USDT') and t['symbol'] not in VIP_SET and t['symbol'] not in GOLD_SET][:TOP_ALT_LIMIT]
+
+                    futures = []
+                    for s in alts:
+                        base_tfs = ALT_TFS_FAST if alt_count < 4 else ALT_TFS_SAFE
+                        esc_level = _coin_escalation_level.get(s, 0)
+                        if esc_level >= len(ALT_TF_ORDER): continue
+                        valid_tfs = [tf for tf in base_tfs if ALT_TF_ORDER.index(tf) >= esc_level]
+                        if not valid_tfs: continue 
+
+                        futures.append(executor.submit(_scan_single_alt, s, active_keys, valid_tfs))
+
+                    for future in as_completed(futures):
+                        if _stop_event.is_set(): break
+                        res = future.result()
+                        if res and alt_count < MAX_ALT:
+                            symbol, sig = res
+                            pos_side = sig['side']
+                            order_side = 'BUY' if pos_side == 'LONG' else 'SELL'
+                            if execute_order(symbol, order_side, pos_side, BASE_MARGIN):
+                                alt_count += 1
+                                active_keys.append(f"{symbol}_{pos_side}")
+                                current_active_set.add(f"{symbol}_{pos_side}")
+                                _previous_active_keys = current_active_set
+
+                current_time = time.time()
+                if current_time - _last_heartbeat_time >= 60.0:
+                    gold_status = "1 Aktif" if gold_active_count > 0 else "0 Aktif"
+                    logger.info(f"👀 System OK [BETA v3.1] | Market: (VIP: {vip_count}/{MAX_VIP} | ALT: {alt_count}/{MAX_ALT} | GOLD: {gold_status})")
+                    _last_heartbeat_time = current_time
+
+                for _ in range(15):
+                    if _stop_event.is_set(): break
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Loop Error: {e}")
+                time.sleep(10)
+    finally:
+        executor.shutdown(wait=True)
+        logger.info("Bot engine stopped.")
+
+if __name__ == "__main__":
+    shutdown_event = threading.Event()
+    run_bot(shutdown_event)
+
+[APP.PY]
+# ==========================================
+# nazBot Sniper System [BETA v3.1] - FLASK DASHBOARD
+# FILE: app.py
+# FUNGSI: Web UI, Real-time Data, Panic Button (Mendukung Long & Short)
+# ==========================================
+
+import os
+import time
+import json
+import logging
+from flask import Flask, render_template, jsonify, request
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
+# Matikan log bawaan Flask agar console tidak spam
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+app = Flask(__name__)
+
+API_KEY = os.environ.get('BINANCE_API_KEY', '')
+API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
+
+# Gunakan testnet=True. Ubah ke False jika pindah ke Real Account
+client = Client(API_KEY, API_SECRET, testnet=True)
+
+STATE_FILE = 'status.txt'
+LEDGER_FILE = 'profit_ledger.txt'
+
+VIP_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "XRPUSDT", "ALICEUSDT"}
+GOLD_PAIRS = {"PAXGUSDT"} # Hanya PAXG sesuai update v3.1
+
+def read_bot_status():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            return f.read().strip()
+    return 'OFF'
+
+def write_bot_status(status):
+    with open(STATE_FILE, 'w') as f:
+        f.write(status)
+
+def parse_ledger():
+    """Membaca 8 Kolom Ledger v3.1"""
+    history = []
+    if os.path.exists(LEDGER_FILE) and os.path.getsize(LEDGER_FILE) > 0:
+        with open(LEDGER_FILE, 'r') as f:
+            lines = [l for l in f.readlines() if '|' in l and 'TIME' not in l and '---' not in l]
+            for line in reversed(lines[-20:]): # Ambil 20 transaksi terakhir
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) >= 8:
+                    history.append({
+                        'time': parts[0],
+                        'symbol': parts[1],
+                        'profit': parts[2],
+                        'roe': parts[3],
+                        'tot_pnl': parts[4],
+                        'tot_roe': parts[5],
+                        'saldo': parts[6],
+                        'growth': parts[7]
+                    })
+    return history
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/data')
+def get_data():
+    try:
+        # 1. Ambil Saldo Riil
+        account_info = client.futures_account()
+        wallet_balance = 0.0
+        for asset in account_info.get('assets', []):
+            if asset['asset'] == 'USDT':
+                wallet_balance = float(asset['walletBalance'])
+
+        # 2. Ambil Posisi Aktif
+        positions = client.futures_position_information()
+        active_positions = []
+        total_unrealized = 0.0
+        total_margin = 0.0
+
+        vip_positions = []
+        alt_positions = []
+        gold_positions = []
+
+        for p in positions:
+            amt = float(p['positionAmt'])
+            if amt != 0:
+                symbol = p['symbol']
+                unrealized = float(p['unRealizedProfit'])
+                mark_price = float(p['markPrice'])
+                entry_price = float(p['entryPrice'])
+                leverage = float(p.get('leverage', 50))
+                pos_side = p['positionSide']
+
+                # Penentuan Arah (LONG/SHORT)
+                if pos_side == 'BOTH':
+                    actual_side = 'LONG' if amt > 0 else 'SHORT'
+                else:
+                    actual_side = pos_side
+
+                # Kalkulasi Margin Aktual
+                margin = (abs(amt) * mark_price) / leverage
+                roe_percent = (unrealized / margin) * 100 if margin > 0 else 0
+
+                total_unrealized += unrealized
+                total_margin += margin
+
+                pos_data = {
+                    'symbol': symbol,
+                    'side': actual_side,
+                    'leverage': int(leverage),
+                    'margin': margin,
+                    'entry_price': entry_price,
+                    'mark_price': mark_price,
+                    'roe': roe_percent,
+                    'unrealized': unrealized
+                }
+
+                if symbol in GOLD_PAIRS:
+                    gold_positions.append(pos_data)
+                elif symbol in VIP_SYMBOLS:
+                    vip_positions.append(pos_data)
+                else:
+                    alt_positions.append(pos_data)
+
+        # 3. Hitung Ekuitas (Saldo + Floating)
+        equity = wallet_balance + total_unrealized
+
+        # Total ROE Aktif (Persentase Floating Keseluruhan)
+        total_active_roe = (total_unrealized / total_margin) * 100 if total_margin > 0 else 0.0
+
+        # 4. Baca Ledger Terakhir
+        ledger_data = parse_ledger()
+        net_profit_str = ledger_data[0]['tot_pnl'] if ledger_data else "+0.00"
+        net_roe_str = ledger_data[0]['tot_roe'] if ledger_data else "+0.00%"
+
+        return jsonify({
+            'status': 'success',
+            'bot_status': read_bot_status(),
+            'wallet_balance': wallet_balance,
+            'equity': equity,
+            'net_profit': net_profit_str,
+            'net_roe': net_roe_str,
+            'total_unrealized': total_unrealized,
+            'total_active_roe': total_active_roe,
+            'vip_positions': vip_positions,
+            'alt_positions': alt_positions,
+            'gold_positions': gold_positions,
+            'ledger': ledger_data
+        })
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/api/toggle', methods=['POST'])
+def toggle_bot():
+    current_status = read_bot_status()
+    new_status = 'ON' if current_status == 'OFF' else 'OFF'
+    write_bot_status(new_status)
+    return jsonify({'status': 'success', 'bot_status': new_status})
+
+@app.route('/api/close_all', methods=['POST'])
+def close_all():
+    try:
+        # PENTING: Matikan bot dulu agar tidak auto-open saat proses close
+        write_bot_status('OFF')
+
+        positions = client.futures_position_information()
+        for p in positions:
+            amt = float(p['positionAmt'])
+            if amt != 0:
+                symbol = p['symbol']
+                pos_side = p['positionSide']
+
+                # 1. Batalkan semua antrean LIMIT TP dan STOP LOSS untuk koin ini
+                try:
+                    client.futures_cancel_all_open_orders(symbol=symbol)
+                except Exception as e:
+                    print(f"Gagal membatalkan order open {symbol}: {e}")
+
+                # 2. Tutup Posisi (LONG ditutup dengan SELL, SHORT ditutup dengan BUY)
+                action_side = 'SELL' if amt > 0 else 'BUY'
+
+                # Karena kita pakai Dual-Side Mode, pos_side harus presisi
+                try:
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side=action_side,
+                        type='MARKET',
+                        quantity=abs(amt),
+                        positionSide=pos_side
+                    )
+                except Exception as e:
+                    print(f"Gagal Close {symbol}: {e}")
+
+        return jsonify({'status': 'success', 'message': 'Semua posisi ditutup dan order dibatalkan.'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+if __name__ == '__main__':
+    # Pastikan status default adalah OFF saat server baru menyala
+    write_bot_status('OFF')
+    # Jalankan server Flask (Listen to all interfaces for Replit)
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
+[INDEX.HTML]
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nazBot Sniper BETA v3.1</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; 
+            color: #e2e8f0; 
+        }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .glass-panel {
+            background-color: #1e293b; 
+            border: 1px solid #334155; 
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-6">
+
+    <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+        <div class="flex items-center gap-3">
+            <div class="p-2 bg-blue-600 rounded-lg shadow-lg shadow-blue-500/50">
+                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold text-white tracking-wide">nazBot Sniper <span class="text-blue-400">BETA v3.1</span></h1>
+                <p class="text-xs text-slate-400">Dual Mode (Long/Short) & Volume Filter Active</p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button id="toggleBotBtn" onclick="toggleBot()" class="px-6 py-2 font-bold text-sm rounded-lg transition-all duration-300 shadow-lg">
+                </button>
+            <button onclick="closeAllPositions()" class="px-5 py-2 font-bold text-sm bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow-lg shadow-rose-600/30 transition-colors">
+                ☠️ CLOSE ALL
+            </button>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="glass-panel p-5 text-center">
+            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Saldo USDT (Riil)</p>
+            <h2 id="walletBalance" class="text-2xl font-mono font-bold text-white">$0.00</h2>
+        </div>
+        <div class="glass-panel p-5 text-center">
+            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Net Profit / ROE (Ledger)</p>
+            <h2 id="netProfit" class="text-2xl font-mono font-bold text-emerald-400">+ $0.00 (+0.00%)</h2>
+        </div>
+        <div class="glass-panel p-5 text-center">
+            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Floating PNL / ROE Aktif</p>
+            <h2 id="floatingPnl" class="text-2xl font-mono font-bold text-white">$0.00 (0.00%)</h2>
+        </div>
+        <div class="glass-panel p-5 text-center">
+            <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Total Ekuitas</p>
+            <h2 id="totalEquity" class="text-2xl font-mono font-bold text-white">$0.00</h2>
+        </div>
+    </div>
+
+    <div class="space-y-6">
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-yellow-500 flex items-center gap-2">🏆 Radar Emas - PAXG Only (<span id="goldCount">0</span>/1)</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="px-5 py-3">Symbol</th>
+                            <th class="px-5 py-3 text-center">Side</th>
+                            <th class="px-5 py-3 text-right">Lev</th>
+                            <th class="px-5 py-3 text-right">Margin</th>
+                            <th class="px-5 py-3 text-right">Entry Price</th>
+                            <th class="px-5 py-3 text-right">Mark Price</th>
+                            <th class="px-5 py-3 text-right">ROE (%)</th>
+                            <th class="px-5 py-3 text-right">Unrealized ($)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="goldTable" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-purple-400 flex items-center gap-2">👑 VIP Positions (<span id="vipCount">0</span>/8)</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="px-5 py-3">Symbol</th>
+                            <th class="px-5 py-3 text-center">Side</th>
+                            <th class="px-5 py-3 text-right">Lev</th>
+                            <th class="px-5 py-3 text-right">Margin</th>
+                            <th class="px-5 py-3 text-right">Entry Price</th>
+                            <th class="px-5 py-3 text-right">Mark Price</th>
+                            <th class="px-5 py-3 text-right">ROE (%)</th>
+                            <th class="px-5 py-3 text-right">Unrealized ($)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="vipTable" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-pink-400 flex items-center gap-2">🚀 Altcoin Positions (<span id="altCount">0</span>/8)</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="px-5 py-3">Symbol</th>
+                            <th class="px-5 py-3 text-center">Side</th>
+                            <th class="px-5 py-3 text-right">Lev</th>
+                            <th class="px-5 py-3 text-right">Margin</th>
+                            <th class="px-5 py-3 text-right">Entry Price</th>
+                            <th class="px-5 py-3 text-right">Mark Price</th>
+                            <th class="px-5 py-3 text-right">ROE (%)</th>
+                            <th class="px-5 py-3 text-right">Unrealized ($)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="altTable" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-emerald-400 flex items-center gap-2">📗 Buku Jurnal & Ledger Pertumbuhan</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
+                        <tr>
+                            <th class="px-5 py-3">Waktu</th>
+                            <th class="px-5 py-3">Pair / Koin</th>
+                            <th class="px-5 py-3 text-right">Profit ($)</th>
+                            <th class="px-5 py-3 text-right">ROE (%)</th>
+                            <th class="px-5 py-3 text-right">Tot PNL ($)</th>
+                            <th class="px-5 py-3 text-right">Tot ROE (%)</th>
+                            <th class="px-5 py-3 text-right">Saldo Asli ($)</th>
+                            <th class="px-5 py-3 text-right">Growth (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ledgerTable" class="divide-y divide-slate-700/50"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="glass-panel overflow-hidden">
+            <div class="bg-slate-800 border-b border-slate-700 px-5 py-3">
+                <h3 class="font-bold text-blue-400 flex items-center gap-2">📊 Visualisasi Tren Pertumbuhan Modal</h3>
+            </div>
+            <div class="p-5" style="height: 300px;">
+                <canvas id="growthChart"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Init Chart.js
+        let growthChart;
+        function updateChart(ledgerData) {
+            const ctx = document.getElementById('growthChart').getContext('2d');
+            const labels = ledgerData.map(row => row.time).reverse();
+            const dataPoints = ledgerData.map(row => parseFloat(row.saldo)).reverse();
+
+            if (growthChart) {
+                growthChart.data.labels = labels;
+                growthChart.data.datasets[0].data = dataPoints;
+                growthChart.update();
+            } else {
+                growthChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Saldo Wallet (USDT)',
+                            data: dataPoints,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            borderWidth: 3,
+                            pointRadius: 4,
+                            pointBackgroundColor: '#3b82f6'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+                            x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Helper: Format Warna Uang
+        function formatColor(val, isPercentage = false, prefix = '') {
+            let num = parseFloat(val);
+            if (isNaN(num)) return val;
+            let strVal = Math.abs(num).toFixed(2) + (isPercentage ? '%' : '');
+            if (num > 0) return `<span class="text-emerald-400">+${prefix}${strVal}</span>`;
+            if (num < 0) return `<span class="text-rose-400">-${prefix}${strVal}</span>`;
+            return `<span class="text-slate-400">${prefix}${strVal}</span>`;
+        }
+
+        // Helper: Format Side Badge (LONG/SHORT)
+        function formatSide(side) {
+            if (side === 'LONG') {
+                return `<span class="px-2 py-1 bg-emerald-900/50 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold rounded uppercase tracking-widest">LONG</span>`;
+            } else if (side === 'SHORT') {
+                return `<span class="px-2 py-1 bg-rose-900/50 border border-rose-500/30 text-rose-400 text-[10px] font-bold rounded uppercase tracking-widest">SHORT</span>`;
+            }
+            return `<span class="px-2 py-1 bg-slate-700 text-slate-300 text-xs font-bold rounded uppercase">${side}</span>`;
+        }
+
+        // Render Baris Tabel Posisi
+        function renderTableRows(tableId, dataList, emptyMsg) {
+            const tbody = document.getElementById(tableId);
+            if (!dataList || dataList.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-4 text-center text-slate-500 italic">${emptyMsg}</td></tr>`;
+                return;
+            }
+            let html = '';
+            dataList.forEach(p => {
+                html += `
+                    <tr class="hover:bg-slate-800/50 transition-colors border-t border-slate-700/50">
+                        <td class="px-5 py-3 font-bold text-slate-200">${p.symbol}</td>
+                        <td class="px-5 py-3 text-center">${formatSide(p.side)}</td>
+                        <td class="px-5 py-3 text-right text-slate-400">${p.leverage}x</td>
+                        <td class="px-5 py-3 text-right font-mono">$${parseFloat(p.margin).toFixed(2)}</td>
+                        <td class="px-5 py-3 text-right font-mono text-slate-400">${parseFloat(p.entry_price).toPrecision(6)}</td>
+                        <td class="px-5 py-3 text-right font-mono text-slate-400">${parseFloat(p.mark_price).toPrecision(6)}</td>
+                        <td class="px-5 py-3 text-right font-mono font-bold">${formatColor(p.roe, true)}</td>
+                        <td class="px-5 py-3 text-right font-mono font-bold">${formatColor(p.unrealized, false, '$')}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
+        // Render Baris Tabel Ledger
+        function renderLedger(dataList) {
+            const tbody = document.getElementById('ledgerTable');
+            if (!dataList || dataList.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="px-5 py-4 text-center text-slate-500 italic">Belum ada transaksi tercatat...</td></tr>`;
+                return;
+            }
+            let html = '';
+            dataList.forEach(row => {
+                html += `
+                    <tr class="hover:bg-slate-800/50 transition-colors border-t border-slate-700/50">
+                        <td class="px-5 py-3 text-slate-400">${row.time}</td>
+                        <td class="px-5 py-3 font-bold text-slate-200">${row.symbol}</td>
+                        <td class="px-5 py-3 text-right font-mono">${formatColor(row.profit.replace(/[+$]/g,''), false, '$')}</td>
+                        <td class="px-5 py-3 text-right font-mono">${formatColor(row.roe.replace(/[+%]/g,''), true)}</td>
+                        <td class="px-5 py-3 text-right font-mono">${formatColor(row.tot_pnl.replace(/[+$]/g,''), false, '$')}</td>
+                        <td class="px-5 py-3 text-right font-mono">${formatColor(row.tot_roe.replace(/[+%]/g,''), true)}</td>
+                        <td class="px-5 py-3 text-right font-mono text-blue-400 font-bold">$${parseFloat(row.saldo).toFixed(2)}</td>
+                        <td class="px-5 py-3 text-right font-mono font-bold">${formatColor(row.growth.replace(/[+%]/g,''), true)}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
+        // Fetch Data Utama
+        async function updateDashboard() {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+                if (data.status === 'success') {
+
+                    // Update Button Status (Simple Mode)
+                    const btn = document.getElementById('toggleBotBtn');
+                    if (data.bot_status === 'ON') {
+                        btn.innerHTML = 'STOP BOT';
+                        btn.className = "px-6 py-2 font-bold text-sm bg-slate-700 border border-slate-600 text-rose-400 hover:bg-slate-600 rounded-lg shadow-lg transition-all";
+                    } else {
+                        btn.innerHTML = 'START BOT';
+                        btn.className = "px-6 py-2 font-bold text-sm bg-emerald-600 text-white hover:bg-emerald-500 rounded-lg shadow-lg shadow-emerald-600/30 transition-all";
+                    }
+
+                    // Update Cards
+                    document.getElementById('walletBalance').innerText = '$' + parseFloat(data.wallet_balance).toFixed(2);
+                    document.getElementById('totalEquity').innerText = '$' + parseFloat(data.equity).toFixed(2);
+
+                    const floatingStr = formatColor(data.total_unrealized, false, '$') + ' (' + formatColor(data.total_active_roe, true) + ')';
+                    document.getElementById('floatingPnl').innerHTML = floatingStr;
+
+                    const netStr = formatColor(data.net_profit.replace(/[+$]/g,''), false, '$') + ' (' + formatColor(data.net_roe.replace(/[+%]/g,''), true) + ')';
+                    document.getElementById('netProfit').innerHTML = netStr;
+
+                    // Update Counters
+                    document.getElementById('goldCount').innerText = data.gold_positions.length;
+                    document.getElementById('vipCount').innerText = data.vip_positions.length;
+                    document.getElementById('altCount').innerText = data.alt_positions.length;
+
+                    // Update Tables & Chart
+                    renderTableRows('goldTable', data.gold_positions, 'Radar Emas mengintai, mencari sinyal volume valid... 🕵️‍♂️');
+                    renderTableRows('vipTable', data.vip_positions, 'Tidak ada posisi VIP aktif. Menunggu momen Sniper... 🎯');
+                    renderTableRows('altTable', data.alt_positions, 'Tidak ada posisi Altcoin aktif. Menunggu momen Sniper... 🎯');
+
+                    renderLedger(data.ledger);
+                    updateChart(data.ledger);
+                }
+            } catch (err) {
+                console.error("Dashboard update failed:", err);
+            }
+        }
+
+        // Action: Toggle Bot
+        async function toggleBot() {
+            try {
+                await fetch('/api/toggle', { method: 'POST' });
+                updateDashboard();
+            } catch (err) {
+                alert("Gagal mengubah status bot.");
+            }
+        }
+
+        // Action: Close All Positions
+        function closeAllPositions() {
+            Swal.fire({
+                title: 'Panic Close All?',
+                text: "Semua order dan antrean Limit akan dibatalkan, lalu ditutup otomatis. Yakin?",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#e11d48',
+                cancelButtonColor: '#475569',
+                confirmButtonText: 'Ya, Tutup Semua!',
+                cancelButtonText: 'Batal',
+                background: '#1e293b',
+                color: '#f8fafc'
+            }).then(async (result) => {
+                if (result.isConfirmed) {
+                    Swal.fire({
+                        title: 'Mengeksekusi...',
+                        text: 'Membatalkan order dan menutup posisi...',
+                        background: '#1e293b',
+                        color: '#f8fafc',
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading() }
+                    });
+
+                    try {
+                        const res = await fetch('/api/close_all', { method: 'POST' });
+                        const data = await res.json();
+                        if(data.status === 'success') {
+                            Swal.fire({
+                                title: 'Cleaned!',
+                                text: data.message,
+                                icon: 'success',
+                                background: '#1e293b',
+                                color: '#f8fafc'
+                            });
+                            updateDashboard();
+                        } else {
+                            Swal.fire('Error', data.message, 'error');
+                        }
+                    } catch (err) {
+                        Swal.fire('Error', 'Gagal memanggil API.', 'error');
+                    }
+                }
+            })
+        }
+
+        // Loop Refresh Tiap 2 Detik
+        setInterval(updateDashboard, 2000);
+        updateDashboard(); // First run
+    </script>
+</body>
+</html>
+
+[MAIN.PY]
+# ==========================================
+# nazBot Sniper System [BETA v2.1]
+# FILE: main.py
+# FUNGSI: Menjalankan Web Dashboard (Flask) dan Bot Engine (Thread)
+# ==========================================
+
+import threading
+import logging
+import os
+from app import app  # Mengambil instance Flask dari app.py
+from bot_logic import run_bot, shutdown_bot
+
+# --- Konfigurasi Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger('main')
+
+def initialize_system():
+    """Mereset status bot menjadi OFF saat server baru menyala agar aman"""
+    try:
+        with open('status.txt', 'w') as f:
+            f.write('OFF')
+        logger.info("Status bot direset ke OFF (Standby Mode).")
+    except Exception as e:
+        logger.error(f"Gagal mereset status.txt: {e}")
+
+if __name__ == "__main__":
+    logger.info("🔥 Memulai Sistem nazBot Sniper...")
+
+    # 1. Inisialisasi awal
+    initialize_system()
+
+    # 2. Siapkan event untuk mengontrol bot (On/Off switch)
+    shutdown_event = threading.Event()
+
+    # 3. Jalankan Bot Engine di background thread
+    bot_thread = threading.Thread(target=run_bot, args=(shutdown_event,))
+    # daemon=True: Thread otomatis mati jika program utama (Flask) berhenti
+    bot_thread.daemon = True  
+    bot_thread.start()
+    logger.info("⚙️ Bot Engine berjalan di background thread.")
+
+    # 4. Jalankan Web Dashboard (Flask) di main thread (SEKALIGUS SEBAGAI KEEP ALIVE)
+    try:
+        logger.info("🌐 Menjalankan Web Dashboard di port 8080...")
+        logger.info("💡 Sistem Keep-Alive aktif. Menunggu ping dari layanan monitoring...")
+
+        # use_reloader=False sangat penting agar bot_thread tidak dijalankan dua kali oleh Flask
+        app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+
+    except KeyboardInterrupt:
+        logger.info("Sistem dimatikan secara manual oleh user...")
+
+    finally:
+        # 5. Keamanan tingkat tinggi: Pastikan bot berhenti dengan aman saat web server mati
+        logger.info("🛑 Mengirim sinyal shutdown ke Bot Engine...")
+        shutdown_event.set()
+        shutdown_bot()
+        bot_thread.join(timeout=5)
+        logger.info("Sistem nazBot Sniper berhasil dimatikan secara aman. Sampai jumpa, Bos!")
+
+[PROFIT_LEDGER.TXT - SAMPLE STRUCTURE]
+TIME | PAIR | PROFIT $ | ROE % | TOTAL PNL $ | TOTAL ROE % | SALDO BINANCE | GROWTH %
+--------------------------------------------------------------------------------------------------------------
+08:00:01 | BTCUSDT | +5.00 | +100.00% | +5.00 | +100.00% | 5005.00 | +0.10%
