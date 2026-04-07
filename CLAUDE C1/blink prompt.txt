@@ -1,0 +1,32 @@
+Act as a Fullstack Crypto Engineer. I want to build/upgrade a Binance Futures Trading Bot with a Web Dashboard. This project must be ready to run in this environment.
+
+---
+### 🔒 PART 1: CORE CONSTRAINTS (MANDATORY)
+1. LEVERAGE & MARGIN: Strictly 50x leverage and $5 base margin per entry.
+2. POSITION LOGIC:
+   - LONG: No Stop Loss. Uses 3-Stage Dynamic DCA.
+   - SHORT: Strictly -150% ROE Stop Loss (Stop Market). No DCA.
+   - TAKE PROFIT: Always 100% ROE via instant LIMIT ORDER.
+3. ALLOCATION: 1 Gold (PAXG), 8 VIP, 4 Aggressive Alts (5m TF), 4 Safe Alts (15m TF).
+4. DATA INTEGRITY: Use 'profit_ledger.txt' with 8 columns (TIME|PAIR|PROFIT|ROE|TOT_PNL|TOT_ROE|SALDO|GROWTH). The dashboard MUST read this file for Charts and Tables.
+
+---
+### 🧠 PART 2: THE TRADING ENGINE (BOT_LOGIC.PY)
+Optimize the 'get_adaptive_signal' function using 5-layer confluence:
+- EMA 200 (Trend), MA 99 & Bollinger Bands (Dynamic Walls), Static Support/Resistance, and Volume MA Filter (>1.5x average).
+- Improve the entry accuracy for BOTH Long and Short. Use concepts like Price Action rejection (Pinbars) and Volume Spikes.
+
+---
+### 🛠️ PART 3: REPLIT/BLINK COMPATIBILITY
+- Provide 'main.py' to run both Flask (Dashboard) and the Trading Engine (Threading).
+- Provide 'app.py' using Flask to serve the API.
+- Provide 'templates/index.html' using Tailwind CSS, Chart.js, and SweetAlert2. The UI must be dark-themed, showing 8-column ledger tables and the growth chart.
+- Ensure all dependencies are listed for the environment (python-binance, pandas, ta, flask).
+
+---
+### 📂 ATTACHED SOURCE CODE:
+[PASTE SEMUA KODE KAMU (BOT_LOGIC, APP, INDEX, MAIN) DI SINI]
+
+---
+### 🚀 FINAL INSTRUCTION:
+Please generate the complete file structure. Ensure the Dashboard UI remains as I designed it (8-column ledger + Chart) but with the upgraded 'bot_logic' engine.
