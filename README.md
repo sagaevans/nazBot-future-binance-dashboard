@@ -1,68 +1,74 @@
-# 🚀 nazBot Sniper System [BETA v3.3 - Dynamic Recovery]
+# 🚀 nazBot Sniper System [RC v5.2 - REAL ACCOUNT MODE]
 
-**nazBot Sniper** adalah sistem *Automated Algorithmic Trading* yang dirancang khusus untuk pasar **Binance Futures**. Dibangun dengan Python dan antarmuka Web Dashboard interaktif, bot ini menggunakan pendekatan presisi tinggi (Sniper) dipadukan dengan jaring pengaman *Dynamic Cost Averaging* (DCA) berlapis.
+**nazBot Sniper** adalah sistem *Automated Quantitative Trading* tingkat lanjut yang dirancang untuk pasar **Binance Futures**. Pada versi Release Candidate (RC) 5.2 ini, bot telah berevolusi dari mode agresif (Testnet) menjadi mode **Defensif, Efisien, dan Presisi Tinggi** yang dioptimalkan khusus untuk pelestarian modal di **Akun Real**.
 
-## ✨ Fitur Utama (Core Features)
-
-### 🎯 1. Strategi "5-Confluence" (Akurasi Tinggi)
-Bot hanya akan membuka posisi (ENTRY) jika dan hanya jika 5 syarat teknikal ini terpenuhi secara bersamaan dalam satu *candlestick*:
-* **Trend Alignment:** Harga harus searah dengan EMA 200.
-* **Volume Anomaly:** Terjadi lonjakan volume minimal 1.2x dari rata-rata (MA 20).
-* **Price Rejection (Pinbar):** Terdapat ekor *candle* (shadow) penolakan yang kuat.
-* **Dynamic Walls:** Harga menyentuh atau menyerempet MA 99 atau pita luar Bollinger Bands.
-* **Static S/R:** Harga berada di area *Support* atau *Resistance* 100 candle terakhir.
-
-### 🛡️ 2. Dynamic Take Profit & 7-Level DCA
-Sistem pemulihan (*recovery*) super tangguh untuk mencegah kerugian saat pasar berbalik arah (Floating Loss):
-* **7 Lapis DCA:** Menembak peluru DCA secara bertahap saat ROE menyentuh -100%, -200%, -300%, -400%, -600%, -800%, hingga -1000%.
-* **Dynamic TP Scaling:** Ego trading dikontrol oleh mesin. 
-    * *Belum DCA / DCA 1x* ➡️ Target Take Profit **100% ROE**.
-    * *DCA 2x* ➡️ Target Take Profit turun menjadi **50% ROE**.
-    * *DCA 3x atau lebih* ➡️ Mode Survival aktif! Target Take Profit menjadi **15% ROE** (Exit cepat untuk memutar kembali modal).
-
-### ⚡ 3. Failsafe Virtual & Resurrection Logic
-* **Virtual SL/TP:** Mengatasi *slippage* atau kegagalan API Binance. Bot mengecek ROE setiap detik. Jika target tercapai, bot langsung membanting setir melakukan *Market Close*.
-* **Auto-Resurrection:** Jika server/bot sempat mati, saat dihidupkan kembali, bot akan langsung mendeteksi posisi yang tertinggal dan melakukan *Rapid-Fire DCA* massal sesuai dengan level kerugian.
-
-### 👻 4. Liquidity Guard
-Bot terintegrasi dengan filter likuiditas (*Anti-Dummy Coin*). Hanya koin dengan volume transaksi 24 Jam di atas **$1,000,000 USDT** yang akan masuk ke dalam radar. Ini mencegah bot terjebak pada koin dengan *slippage* brutal atau tanpa *order book*.
-
-### 📊 5. Web Dashboard & Portfolio Export
-Antarmuka UI/UX modern bergaya *Glassmorphism* untuk memantau performa bot secara *real-time*:
-* **Live PNL & Wallet Balance Monitoring.**
-* **Panic Button (CLOSE ALL):** Satu klik untuk membatalkan semua order dan menutup semua posisi aktif.
-* **📸 Export Visual:** Fitur tangkapan layar Jurnal & Grafik menjadi file PNG resolusi tinggi untuk portofolio.
-* **📊 Export Excel:** Fitur ekstraksi data Jurnal ke dalam format `.xlsx` murni untuk analisis lanjutan.
+Sistem ini berjalan secara independen di server lokal dengan perlindungan Cloudflare, memastikan eksekusi *latency* rendah tanpa intervensi *cloud provider* pihak ketiga.
 
 ---
 
-## 🛠️ Stack Teknologi
-* **Backend:** Python 3.x, Flask (Web Server)
-* **Trading Engine:** `python-binance` (Binance API), `pandas`, `ta` (Technical Analysis Library)
-* **Frontend UI:** HTML5, Tailwind CSS, SweetAlert2, Chart.js
-* **Export Tools:** `html2canvas` (Image), `SheetJS` (Excel)
+## 🌟 Fitur Utama (Core Upgrades v5.2)
+
+### 1. 🛡️ Eksekusi Fixed Notional (Anti-Overexposure)
+Meninggalkan sistem margin tetap, bot sekarang menggunakan sistem **Fixed Notional Size**. 
+* **Target Posisi Baku:** Selalu **50 USDT** per koin.
+* **Auto-Margin Calculation:** Modal (Margin) yang dipotong dari dompet akan beradaptasi otomatis dengan *leverage* maksimal koin tersebut (Contoh: Leverage 50x = Margin $1. Leverage 25x = Margin $2).
+* **Benefit:** Memastikan eksposur risiko yang seimbang di seluruh portofolio tanpa membebani ketahanan dana.
+
+### 2. 🎣 Smart Limit Maker (Zero Taker Fee)
+Bot tidak lagi menghajar harga pasar (*Market Order*). Setiap sinyal *entry* akan dieksekusi murni sebagai **Limit Order (Maker)**.
+* Menghilangkan risiko *slippage* (selip harga) sekecil apa pun.
+* Memangkas biaya transaksi secara masif (menghindari *Taker Fee* Binance).
+
+### 3. 🧠 Smart Order Upgrading (Hedge Fund Logic)
+Dilengkapi dengan "Satpam Antrean" cerdas. Jika bot memiliki antrean *Limit Order* yang menggantung dan muncul sinyal baru di koin yang sama:
+* Bot akan menganalisa: *"Apakah harga baru ini lebih menguntungkan?"*
+* Jika **YA** (Lebih diskon untuk LONG / Lebih pucuk untuk SHORT), bot akan membatalkan antrean lama dan menggantinya dengan harga baru (*Order Upgrading*).
+* Jika **TIDAK**, bot akan mengabaikan sinyal baru dan tetap antre di harga terbaik.
+
+### 4. 🐋 Sentimen Makro: Fear & Greed Index (VIP Only)
+Koin Fundamental/VIP (BTC, ETH, SOL, dll) beroperasi dengan logika *Smart Money*:
+* **Haram SHORT:** Koin VIP dikunci secara permanen hanya untuk posisi **LONG**.
+* **Fear Mode Only:** Bot menarik data *Global Crypto Fear & Greed Index* setiap jam. Koin VIP **hanya akan menembak** jika skor berada di fase ketakutan ekstrem (Skor 0 - 45). Saat pasar sedang serakah (Greed), VIP akan hibernasi.
+
+### 5. 🕸️ Jaring Bunglon (Auto-Adjusting Limit Net) & 7-Level DCA
+Sistem *Dynamic Cost Averaging* berlapis untuk menahan gempuran pasar:
+* **7 Lapis Peluru DCA:** Terpicu di -100%, -200%, -300%, -400%, -600%, -800%, hingga -1000% ROE.
+* **Dynamic Take Profit:** Target egois (100% ROE) akan otomatis menyusut menjadi 50% (DCA 2), dan berubah ke Mode Survival 15% (DCA 3+) agar modal cepat terbebas.
+* **Auto-Limit Repricing:** Setiap kali DCA tersentuh, bot otomatis mencabut jaring TP lama dan memasang jaring Limit TP baru sesuai harga rata-rata (*average entry*) secara presisi.
+
+### 6. 🔒 Liquidity Guard (Filter Volume)
+Bot otomatis menendang "Koin Hantu" atau "Dummy Coin". Hanya Altcoin dengan volume transaksi 24 jam di atas **$1,000,000 USDT** yang lolos sensor radar.
 
 ---
 
-## ⚙️ Cara Instalasi & Setup
+## 🎯 Strategi "5-Confluence"
+Bot tetap mempertahankan inti akurasi *Sniper*, hanya melakukan entri jika 5 syarat teknikal ini terpenuhi dalam satu *candlestick*:
+1. **Trend Alignment:** Searah dengan EMA 200.
+2. **Volume Anomaly:** Lonjakan volume minimal 1.2x dari rata-rata (MA 20).
+3. **Price Rejection:** Ekor *candle* (*shadow* / Pinbar) yang panjang.
+4. **Dynamic Walls:** Harga menabrak MA 99 atau pita luar Bollinger Bands.
+5. **Static S/R:** Harga menyentuh *Support* atau *Resistance* terkuat dalam 100 *candle* terakhir.
 
-1. **Clone Repository / Setup di Replit:**
-   Pastikan struktur file sudah sesuai (`main.py`, `app.py`, `bot_logic.py`, dan folder `templates/index.html`).
+---
 
-2. **Environment Variables (Rahasia API):**
-   Masukkan API Key Binance kamu di bagian *Secrets* (Replit) atau `.env` file:
-   * `BINANCE_API_KEY` = *Your_API_Key*
-   * `BINANCE_API_SECRET` = *Your_API_Secret*
+## 🛠️ Stack Teknologi & Persyaratan Sistem
+* **Backend:** Python 3.10+
+* **Trading Engine:** `python-binance`, `pandas`, `ta`, `requests`
+* **Infrastructure:** Local PC Server + Cloudflare Tunnels (Disarankan untuk operasional Real Account).
+* **Environment:** Setup `BINANCE_API_KEY` dan `BINANCE_API_SECRET` pada *environment variables* lokal Anda. *Wajib mencentang izin Futures dan MAKSIMALKAN keamanan dengan mematikan izin Withdrawals pada API Binance.*
 
-3. **Install Dependencies:**
-   Jalankan perintah ini di console/terminal:
+---
+
+## ⚡ Cara Menjalankan Bot
+1. Pastikan semua *library* sudah terpasang:
    ```bash
-   pip install pandas ta python-binance flask
-  
-## ⚠️ Peringatan Penting (Keep Alive)
-Karena bot ini beroperasi di cloud (seperti Replit), server bisa "tertidur" jika tidak ada aktivitas. SANGAT DISARANKAN untuk menyambungkan URL Webview Dashboard bot ini ke layanan pemantau seperti UptimeRobot atau Cron-job.org (Ping setiap 5 menit) agar bot tetap "melek" 24/7 dan tidak ketinggalan momen DCA.
----
+   pip install pandas ta python-binance flask requests
 
-## 📜 Disclaimer
-Cryptocurrency futures trading carries a high level of risk and may not be suitable for all investors. This bot is provided "as is" for educational and experimental purposes. The creator is not responsible for any financial losses incurred while using this software.
- 
+   Jalankan mesin utama:
+
+Bash
+python main.py
+Akses Dashboard (Web UI) melalui URL lokal (misal: http://localhost:8080) atau link Cloudflare Tunnel Anda.
+
+📜 Disclaimer Mutlak
+Bot ini beroperasi di pasar Binance Futures menggunakan uang riil. Cryptocurrency trading adalah aktivitas berisiko tinggi (High Risk). Segala pengaturan ukuran notional, leverage, dan target DCA telah diuji, namun kondisi pasar ekstrem (Black Swan events) dapat menyebabkan likuidasi. Gunakan dengan bijak, pantau secara berkala, dan pengembang tidak bertanggung jawab atas segala kerugian finansial yang terjadi.
