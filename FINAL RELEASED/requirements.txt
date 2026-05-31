@@ -1,0 +1,8 @@
+python-binance==1.0.19
+pandas
+ta
+numpy
+flask
+flask-cors
+requests
+python-dotenv
